@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useChatSession } from "@/components/session";
 import { visibleQueuedSteers } from "@/components/session-core";
 import { SetupDialog } from "@/components/setup-dialog";
@@ -186,6 +186,243 @@ function SystemLine({ children, testId }: { children: React.ReactNode; testId?: 
 function isSubagentSteer(m: LhViewMessage): boolean {
 	return (m.metadata as { subagentResult?: unknown } | undefined)?.subagentResult != null;
 }
+
+/** The settled transcript rows (perf round, 2026-10-24): memoized so a
+ *  composer keystroke — the draft lives in Chat state — re-renders none of
+ *  them. Every prop is stable between keystrokes (messages/phases/
+ *  sourceTextParts are memoized on the session model's version; onOpenPlan
+ *  is a state setter), and the rows read nothing else from Chat. */
+const TranscriptRows = memo(function TranscriptRows({
+	messages,
+	phases,
+	sourceTextParts,
+	status,
+	onOpenPlan,
+}: {
+	messages: LhViewMessage[];
+	phases: Phase3[];
+	sourceTextParts: Map<string, string>;
+	status: ReturnType<typeof useChatSession>["status"];
+	onOpenPlan: (open: boolean) => void;
+}) {
+	return (
+		<>
+			{messages.map((m, mi) =>
+				m.role === "user" && isSubagentSteer(m) ? (
+					// Sub-agent delivery (wake-pipeline steer): NO message bubble — the
+					// artifact card sits in the transcript column directly, full width
+					// and centered like the teacher's artifacts (contracts.ts "THE ASYNC
+					// PROTOCOL" §4). Key fallback: legacy transcripts (pre id-hygiene)
+					// can still hold empty ids — the index keeps keys unique for them.
+					<SubagentSteerCard key={m.id || `m-${mi}`} message={m} />
+				) : m.role === "user" && m.parts.some((p) => p.type === "data-probe-handoff") ? (
+				// The probe→teach handoff wake (custom-message scheme): the
+				// PLANNING DIVIDER IS the seam (owner ruling 2026-09-26 — it
+				// replaced the "Preparing your plan…" system line; the marker
+				// renders in the right spot by record construction, so the old
+				// fold-based divider — which floated to the transcript top once
+				// Wave D grouping merged the whole probe into one giant
+				// assistant group — is gone). Never a user bubble: the wake is
+				// scaffolding; the model-facing instruction lives in the adapter.
+				<PhaseDivider key={m.id || `m-${mi}`} phase="plan" />
+			) : m.role === "user" && m.parts.length > 0 && m.parts.every((p) => p.type.startsWith("data-")) ? (
+				// Marker cards (custom messages, 2026-10-04): user-side
+				// scaffolding — the graph-context pick, the practice
+				// thinking trace — render as cards in the transcript
+				// column directly, NO chat bubble (the subagent-steer
+				// precedent). The user branch below renders text only;
+				// without this hoist a data-only message read as an
+				// EMPTY bubble (owner report, 2026-10-04).
+				<Fragment key={m.id || `m-${mi}`}>
+					{m.parts.map((part, pi) => {
+						switch (part.type) {
+							case "data-graph-context":
+								return <GraphContextCard key={pi} data={part.data as GraphContextData} />;
+							case "data-compaction":
+								return <CompactionMomentDivider key={pi} data={part.data as CompactionDividerData} />;
+							case "data-compaction-cut":
+								return <CompactionCutDivider key={pi} data={part.data as CompactionDividerData} />;
+							case "data-practice-thinking":
+								return <ThinkingCard key={pi} data={part.data as PracticeThinkingData} />;
+							case "data-practice-next":
+								// The learner's move-on signal (owner round 16): a compact
+								// centered mono-caps line — chrome, the dismissal register.
+								return (
+									<div
+										key={pi}
+										data-testid="practice-next-line"
+										className="my-4 flex items-center justify-center gap-1.5 font-ui text-xs font-medium uppercase tracking-wide text-muted-foreground"
+									>
+										<ArrowRightIcon className="size-3" />
+										Next problem
+									</div>
+								);
+							default:
+								return null;
+						}
+					})}
+				</Fragment>
+			) : (
+					<Fragment key={m.id || `m-${mi}`}>
+					{/* THE INFERRED TEACH SEAM (owner ruling 2026-09-26, the verdict
+					death): teaching begins where the FIRST nodeId-tagged quiz is
+					posed — the fold (phaseTimeline, the same derivation the phase chip
+					reads) flips to teach exactly AT this assistant group. STEP-LEVEL
+					since owner round 8 (2026-10-05 — the stacked-dividers bug): the
+					plan presentation often lives in the SAME message, an earlier
+					provider step than the quiz call, and the old message-level seam
+					drew this divider before the plan too (Planning and Teaching
+					stacked back-to-back, nothing between). teachStepIndex finds the
+					step boundary governing the flip call: -1 = the message's first
+					step → prepend before the whole block (this branch); a later
+					index → the divider renders AT that part boundary in the loop
+					below (replacing the plain step hairline — a labeled phase rule
+					supersedes it). The boundary check (this index flips, the
+					previous didn't) still guarantees exactly ONE divider per session.
+					PREPENDED, never a replacement branch: the teach group is a real
+					message with content — a replacement ternary swallowed the entire
+					first lesson block (the Lacan session, 2026-09-27). */}
+					{m.role === "assistant" &&
+					mi > 0 &&
+					phases[mi] === "teach" &&
+					phases[mi - 1] !== "teach" &&
+					teachStepIndex(m.parts) === -1 ? (
+						<PhaseDivider key={`teach-${m.id || `m-${mi}`}`} phase="teach" />
+					) : null}
+					{m.role === "user" ? (
+						/* THE DOCUMENT ROW (owner round, 2026-10-05): no right-aligned
+						    bubble — the transcript reads as a document. User text is a
+						    full-width quote block: muted "You" label, muted rail,
+						    FULL-opacity text (learner words are content, not whisper).
+						    Distinguished from user thinking at a glance: thinking is
+						    collapsed + 50% italic; this is upright and present.
+						    User text renders plain — the model's LaTeX pipeline is not
+						    applied to learner-authored text ($ stays $, no surprises).
+						    Rendered WITHOUT the Message wrapper — that is the bubble. */
+							<div
+						data-testid="user-message"
+						/* THE DOCUMENT, ALL-IN (owner rounds two+three, 2026-10-07):
+						    no chat side — the user message is a full-width card-color
+						    BAND, the IDENTICAL geometry as the thinking rows: 5px band
+						    padding, the left gap matches it, the rail fills the 3ch
+						    inset (the band is the authorship mark against the agent's
+						    transparent prose). The "You" label stays — one register
+						    with the thinking labels. */
+						className="my-2 w-full border-l-[calc(3ch-14px)] border-muted-foreground/30 bg-card py-1 pl-[14px] pr-4 font-ui text-xs"
+					>
+								{/* The rail GROUPS (owner round 4, 2026-10-05): the YOU heading
+								    sits INSIDE the rail, same mono-xs register and same 1ch
+								    rail as the thinking rows — one quote geometry. */}
+								<div className="font-medium uppercase tracking-wide text-muted-foreground">You</div>
+								<div className="lh-prose whitespace-pre-wrap text-foreground">
+									{m.parts.filter((p) => p.type === "text").map((p) => p.text).join("\n")}
+								</div>
+							</div>
+					) : (
+					<Message from="assistant" className="max-w-full">
+					<MessageContent className="w-full">
+							{m.parts.map((part, pi) => {
+								const isLastPart = mi === messages.length - 1 && pi === m.parts.length - 1;
+								// The step boundary where teaching begins (round 8): when
+								// the teach flip happens in a LATER step, its PhaseDivider
+								// replaces this boundary's plain hairline.
+								const teachBoundary =
+									m.role === "assistant" &&
+									mi > 0 &&
+									phases[mi] === "teach" &&
+									phases[mi - 1] !== "teach" &&
+									teachStepIndex(m.parts) === pi;
+								// A tool call that errored BACK TO THE AGENT (validation
+								// failure, malformed args) is invisible work — the agent
+								// reads the error and retries. Owner ruling 2026-09-26:
+								// surface the retry loop as one quiet line, any tool,
+								// instead of silence (question tools used to render null,
+								// so a flailing quiz loop read as a stall). Aborts are
+								// terminal — nothing retries — so they stay silent.
+								if (
+									part.state === "output-error" &&
+									part.type.startsWith("tool-") &&
+									part.errorText !== "Operation aborted"
+								) {
+									return (
+										<SystemLine key={`retry-${pi}`} testId="tool-retry">
+											Retrying…
+										</SystemLine>
+									);
+								}
+								switch (part.type) {
+									case "text": {
+										const sourceId = textPartMessageId(part.id);
+										const anchor = sourceId && sourceTextParts.get(sourceId) === part.id ? messageAnchorId(sourceId) : undefined;
+										return (
+											<div key={part.id || pi} id={anchor} data-source-message-id={sourceId ?? undefined} className="lh-source-passage">
+												<MessageResponse>{part.text}</MessageResponse>
+											</div>
+										);
+									}
+									case "reasoning":
+										return (
+											<Reasoning key={pi} isStreaming={status === "streaming" && isLastPart} className="mb-2">
+												<ReasoningTrigger />
+												<ReasoningContent>{part.text ?? ""}</ReasoningContent>
+											</Reasoning>
+										);
+									case "step-start":
+										if (teachBoundary)
+											return <PhaseDivider key={`teach-step-${pi}`} phase="teach" />;
+										return pi > 0 ? <Separator key={pi} className="my-3" /> : null;
+									case "data-plan-block":
+										// The plan in the chat (wave 4): a frozen snapshot
+										// block — rendered as carried, never re-derived.
+										return (
+											<PlanBlock
+												key={pi}
+												data={part.data as PlanBlockData}
+												onOpen={() => onOpenPlan(true)}
+											/>
+										);
+									case "tool-quiz":
+									case "tool-probe":
+									case "tool-ask_user_question":
+									case "tool-explain":
+									case "tool-recall": {
+										// Pending/streaming questions live in the dock, not the
+										// transcript; answered ones render as graded records.
+										if (part.state === "output-available") {
+											return (
+												<AnsweredCard key={pi} answer={part.output as QuestionAnswerData} input={part.input} />
+											);
+										}
+										return null;
+									}
+									default: {
+										// A tool call being WRITTEN (owner, streaming round 2026-10-01):
+										// input-streaming spans the whole execution, and the live card —
+										// spinner + shimmered activity label, the input watchable on expand
+										// — replaces the retired transcript bottom line. On settling, the
+										// registry's card takes over below.
+										if (part.type.startsWith("tool-") && part.state === "input-streaming") {
+											return <LiveToolCard key={pi} part={part as ArtifactPartProps["part"]} />;
+										}
+										// Artifact extension point (contracts.ts): job
+										// parts and future artifacts render via the
+										// registry — add renderers there, not here.
+										if (part.type.startsWith("tool-")) {
+											const Renderer = artifactRenderers[part.type.slice("tool-".length)];
+											if (Renderer) return <Renderer key={pi} part={part as ArtifactPartProps["part"]} />;
+										}
+										return null;
+									}
+								}
+							})}
+						</MessageContent>
+					</Message>
+					)}
+				</Fragment>
+			))}
+		</>
+	);
+});
 
 /**
  * The teaching session. All chat state lives in useChat; the server persists
@@ -1170,23 +1407,26 @@ export function Chat({
 		doSend();
 	};
 
+	// Stable context values (perf round, 2026-10-24): every keystroke
+	// re-renders Chat (the draft lives here), and a fresh value object would
+	// re-render every consumer card in the transcript with it.
+	const sendText = useCallback(
+		(t: string) => {
+			void send({ type: "text", text: t });
+		},
+		[send],
+	);
+	const openSetup = useCallback(() => setSetupOpen(true), []);
+	const chatActions = useMemo(
+		() => ({ chatId, syncFromServer, sendText, openSetup }),
+		[chatId, syncFromServer, sendText, openSetup],
+	);
+	const openFigure = useCallback((svg: string, inverted: boolean) => setFigureFocus({ svg, inverted }), []);
+	const sessionMermaid = useMemo(() => ({ openMermaid: setMermaidFocus, openFigure }), [openFigure]);
+
 	return (
-		<ChatActionsContext.Provider
-			value={{
-				chatId,
-				syncFromServer,
-				sendText: (t: string) => {
-					void send({ type: "text", text: t });
-				},
-				openSetup: () => setSetupOpen(true),
-			}}
-		>
-		<SessionMermaidContext.Provider
-			value={{
-				openMermaid: setMermaidFocus,
-				openFigure: (svg, inverted) => setFigureFocus({ svg, inverted }),
-			}}
-		>
+		<ChatActionsContext.Provider value={chatActions}>
+		<SessionMermaidContext.Provider value={sessionMermaid}>
 		<JobsContext.Provider value={jobs}>
 		{/* The session surface: the transcript column (header + scroller) and
 		    the plan-tree panel as full-height SIBLINGS — the panel spans top to
@@ -1327,219 +1567,7 @@ export function Chat({
 								/>
 							)}
 
-							{messages.map((m, mi) =>
-								m.role === "user" && isSubagentSteer(m) ? (
-									// Sub-agent delivery (wake-pipeline steer): NO message bubble — the
-									// artifact card sits in the transcript column directly, full width
-									// and centered like the teacher's artifacts (contracts.ts "THE ASYNC
-									// PROTOCOL" §4). Key fallback: legacy transcripts (pre id-hygiene)
-									// can still hold empty ids — the index keeps keys unique for them.
-									<SubagentSteerCard key={m.id || `m-${mi}`} message={m} />
-								) : m.role === "user" && m.parts.some((p) => p.type === "data-probe-handoff") ? (
-								// The probe→teach handoff wake (custom-message scheme): the
-								// PLANNING DIVIDER IS the seam (owner ruling 2026-09-26 — it
-								// replaced the "Preparing your plan…" system line; the marker
-								// renders in the right spot by record construction, so the old
-								// fold-based divider — which floated to the transcript top once
-								// Wave D grouping merged the whole probe into one giant
-								// assistant group — is gone). Never a user bubble: the wake is
-								// scaffolding; the model-facing instruction lives in the adapter.
-								<PhaseDivider key={m.id || `m-${mi}`} phase="plan" />
-							) : m.role === "user" && m.parts.length > 0 && m.parts.every((p) => p.type.startsWith("data-")) ? (
-								// Marker cards (custom messages, 2026-10-04): user-side
-								// scaffolding — the graph-context pick, the practice
-								// thinking trace — render as cards in the transcript
-								// column directly, NO chat bubble (the subagent-steer
-								// precedent). The user branch below renders text only;
-								// without this hoist a data-only message read as an
-								// EMPTY bubble (owner report, 2026-10-04).
-								<Fragment key={m.id || `m-${mi}`}>
-									{m.parts.map((part, pi) => {
-										switch (part.type) {
-											case "data-graph-context":
-												return <GraphContextCard key={pi} data={part.data as GraphContextData} />;
-											case "data-compaction":
-												return <CompactionMomentDivider key={pi} data={part.data as CompactionDividerData} />;
-											case "data-compaction-cut":
-												return <CompactionCutDivider key={pi} data={part.data as CompactionDividerData} />;
-											case "data-practice-thinking":
-												return <ThinkingCard key={pi} data={part.data as PracticeThinkingData} />;
-											case "data-practice-next":
-												// The learner's move-on signal (owner round 16): a compact
-												// centered mono-caps line — chrome, the dismissal register.
-												return (
-													<div
-														key={pi}
-														data-testid="practice-next-line"
-														className="my-4 flex items-center justify-center gap-1.5 font-ui text-xs font-medium uppercase tracking-wide text-muted-foreground"
-													>
-														<ArrowRightIcon className="size-3" />
-														Next problem
-													</div>
-												);
-											default:
-												return null;
-										}
-									})}
-								</Fragment>
-							) : (
-									<Fragment key={m.id || `m-${mi}`}>
-									{/* THE INFERRED TEACH SEAM (owner ruling 2026-09-26, the verdict
-									death): teaching begins where the FIRST nodeId-tagged quiz is
-									posed — the fold (phaseTimeline, the same derivation the phase chip
-									reads) flips to teach exactly AT this assistant group. STEP-LEVEL
-									since owner round 8 (2026-10-05 — the stacked-dividers bug): the
-									plan presentation often lives in the SAME message, an earlier
-									provider step than the quiz call, and the old message-level seam
-									drew this divider before the plan too (Planning and Teaching
-									stacked back-to-back, nothing between). teachStepIndex finds the
-									step boundary governing the flip call: -1 = the message's first
-									step → prepend before the whole block (this branch); a later
-									index → the divider renders AT that part boundary in the loop
-									below (replacing the plain step hairline — a labeled phase rule
-									supersedes it). The boundary check (this index flips, the
-									previous didn't) still guarantees exactly ONE divider per session.
-									PREPENDED, never a replacement branch: the teach group is a real
-									message with content — a replacement ternary swallowed the entire
-									first lesson block (the Lacan session, 2026-09-27). */}
-									{m.role === "assistant" &&
-									mi > 0 &&
-									phases[mi] === "teach" &&
-									phases[mi - 1] !== "teach" &&
-									teachStepIndex(m.parts) === -1 ? (
-										<PhaseDivider key={`teach-${m.id || `m-${mi}`}`} phase="teach" />
-									) : null}
-									{m.role === "user" ? (
-										/* THE DOCUMENT ROW (owner round, 2026-10-05): no right-aligned
-										    bubble — the transcript reads as a document. User text is a
-										    full-width quote block: muted "You" label, muted rail,
-										    FULL-opacity text (learner words are content, not whisper).
-										    Distinguished from user thinking at a glance: thinking is
-										    collapsed + 50% italic; this is upright and present.
-										    User text renders plain — the model's LaTeX pipeline is not
-										    applied to learner-authored text ($ stays $, no surprises).
-										    Rendered WITHOUT the Message wrapper — that is the bubble. */
-											<div
-										data-testid="user-message"
-										/* THE DOCUMENT, ALL-IN (owner rounds two+three, 2026-10-07):
-										    no chat side — the user message is a full-width card-color
-										    BAND, the IDENTICAL geometry as the thinking rows: 5px band
-										    padding, the left gap matches it, the rail fills the 3ch
-										    inset (the band is the authorship mark against the agent's
-										    transparent prose). The "You" label stays — one register
-										    with the thinking labels. */
-										className="my-2 w-full border-l-[calc(3ch-14px)] border-muted-foreground/30 bg-card py-1 pl-[14px] pr-4 font-ui text-xs"
-									>
-												{/* The rail GROUPS (owner round 4, 2026-10-05): the YOU heading
-												    sits INSIDE the rail, same mono-xs register and same 1ch
-												    rail as the thinking rows — one quote geometry. */}
-												<div className="font-medium uppercase tracking-wide text-muted-foreground">You</div>
-												<div className="lh-prose whitespace-pre-wrap text-foreground">
-													{m.parts.filter((p) => p.type === "text").map((p) => p.text).join("\n")}
-												</div>
-											</div>
-									) : (
-									<Message from="assistant" className="max-w-full">
-									<MessageContent className="w-full">
-											{m.parts.map((part, pi) => {
-												const isLastPart = mi === messages.length - 1 && pi === m.parts.length - 1;
-												// The step boundary where teaching begins (round 8): when
-												// the teach flip happens in a LATER step, its PhaseDivider
-												// replaces this boundary's plain hairline.
-												const teachBoundary =
-													m.role === "assistant" &&
-													mi > 0 &&
-													phases[mi] === "teach" &&
-													phases[mi - 1] !== "teach" &&
-													teachStepIndex(m.parts) === pi;
-												// A tool call that errored BACK TO THE AGENT (validation
-												// failure, malformed args) is invisible work — the agent
-												// reads the error and retries. Owner ruling 2026-09-26:
-												// surface the retry loop as one quiet line, any tool,
-												// instead of silence (question tools used to render null,
-												// so a flailing quiz loop read as a stall). Aborts are
-												// terminal — nothing retries — so they stay silent.
-												if (
-													part.state === "output-error" &&
-													part.type.startsWith("tool-") &&
-													part.errorText !== "Operation aborted"
-												) {
-													return (
-														<SystemLine key={`retry-${pi}`} testId="tool-retry">
-															Retrying…
-														</SystemLine>
-													);
-												}
-												switch (part.type) {
-													case "text": {
-														const sourceId = textPartMessageId(part.id);
-														const anchor = sourceId && sourceTextParts.get(sourceId) === part.id ? messageAnchorId(sourceId) : undefined;
-														return (
-															<div key={part.id || pi} id={anchor} data-source-message-id={sourceId ?? undefined} className="lh-source-passage">
-																<MessageResponse>{part.text}</MessageResponse>
-															</div>
-														);
-													}
-													case "reasoning":
-														return (
-															<Reasoning key={pi} isStreaming={status === "streaming" && isLastPart} className="mb-2">
-																<ReasoningTrigger />
-																<ReasoningContent>{part.text ?? ""}</ReasoningContent>
-															</Reasoning>
-														);
-													case "step-start":
-														if (teachBoundary)
-															return <PhaseDivider key={`teach-step-${pi}`} phase="teach" />;
-														return pi > 0 ? <Separator key={pi} className="my-3" /> : null;
-													case "data-plan-block":
-														// The plan in the chat (wave 4): a frozen snapshot
-														// block — rendered as carried, never re-derived.
-														return (
-															<PlanBlock
-																key={pi}
-																data={part.data as PlanBlockData}
-																onOpen={() => setPlanOpen(true)}
-															/>
-														);
-													case "tool-quiz":
-													case "tool-probe":
-													case "tool-ask_user_question":
-													case "tool-explain":
-													case "tool-recall": {
-														// Pending/streaming questions live in the dock, not the
-														// transcript; answered ones render as graded records.
-														if (part.state === "output-available") {
-															return (
-																<AnsweredCard key={pi} answer={part.output as QuestionAnswerData} input={part.input} />
-															);
-														}
-														return null;
-													}
-													default: {
-														// A tool call being WRITTEN (owner, streaming round 2026-10-01):
-														// input-streaming spans the whole execution, and the live card —
-														// spinner + shimmered activity label, the input watchable on expand
-														// — replaces the retired transcript bottom line. On settling, the
-														// registry's card takes over below.
-														if (part.type.startsWith("tool-") && part.state === "input-streaming") {
-															return <LiveToolCard key={pi} part={part as ArtifactPartProps["part"]} />;
-														}
-														// Artifact extension point (contracts.ts): job
-														// parts and future artifacts render via the
-														// registry — add renderers there, not here.
-														if (part.type.startsWith("tool-")) {
-															const Renderer = artifactRenderers[part.type.slice("tool-".length)];
-															if (Renderer) return <Renderer key={pi} part={part as ArtifactPartProps["part"]} />;
-														}
-														return null;
-													}
-												}
-											})}
-										</MessageContent>
-									</Message>
-									)}
-								</Fragment>
-							))}
+							<TranscriptRows messages={messages} phases={phases} sourceTextParts={sourceTextParts} status={status} onOpenPlan={setPlanOpen} />
 
 							{/* THE placeholder, ACTION-gated (owner, optimistic round
 							    3, 2026-10-02): spinner + shimmered Thinking… from the

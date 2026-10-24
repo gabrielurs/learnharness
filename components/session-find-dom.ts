@@ -154,3 +154,13 @@ export function sameSessionRange(range: Range, identity: SessionRangeIdentity | 
 	return !!identity && range.startContainer === identity.start && range.startOffset === identity.startOffset
 		&& range.endContainer === identity.end && range.endOffset === identity.endOffset;
 }
+
+/** The observer's rescan filter (perf round, 2026-10-24): an element marked
+ * data-session-find-style-inert animates ONLY non-visibility properties in
+ * its inline style (the Shimmer's per-frame backgroundPosition), so its style
+ * records can never change what Find sees. Everything else — style anywhere
+ * else (inline hides), class/hidden/state flips, text, child lists — rescans. */
+export function sessionFindMutationRelevant(record: MutationRecord): boolean {
+	return !(record.type === "attributes" && record.attributeName === "style"
+		&& (record.target as Element).hasAttribute?.("data-session-find-style-inert"));
+}
