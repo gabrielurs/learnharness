@@ -111,6 +111,9 @@ interface WakeState {
 	pumping: Set<string>;
 	/** Throttle bookkeeping for the stale-job sweep. */
 	lastSweepAt: number;
+	/** Multiplier on every pump wait (poll, grace, 409 backoff). Absent =
+	 *  1 — production never sets it; tests shrink it (setWakeTimeScaleForTests). */
+	timeScale?: number;
 }
 
 interface LhWakeGlobal {
@@ -152,7 +155,14 @@ const GRACE_MS = 750;
 const RETRY_BACKOFF_MS = [500, 1000, 2000, 5000] as const;
 
 function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+	return new Promise((resolve) => setTimeout(resolve, ms * (state().timeScale ?? 1)));
+}
+
+/** The wake pipeline's tests run the real pump with every wait scaled down
+ *  (perf round, 2026-10-24) — same ordering and gates, a fraction of the
+ *  wall time. Never called outside tests. */
+export function setWakeTimeScaleForTests(scale: number): void {
+	state().timeScale = scale;
 }
 
 /** The job a steer belongs to, if it is a job steer (result/abort);

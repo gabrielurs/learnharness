@@ -57,6 +57,7 @@ import {
 	registerLiveAgent,
 	setJobRespawn,
 	setTurnRunner,
+	setWakeTimeScaleForTests,
 	settleSteers,
 	steerLiveChat,
 	unregisterLiveAgent,
@@ -225,6 +226,13 @@ function post(chatId: string, input: unknown): Request {
 		body: JSON.stringify({ chatId, input }),
 	});
 }
+
+/* The pump runs for real with every wait (poll 400ms, grace 750ms, 409
+ * backoff) scaled by WAKE_SCALE — same gates and ordering, a tenth of the
+ * wall time (perf round, 2026-10-24). Fixed "nothing fired yet" pauses
+ * below are scaled with it, so each still spans the same number of polls. */
+const WAKE_SCALE = 0.1;
+setWakeTimeScaleForTests(WAKE_SCALE);
 
 /* 30s budget (owner round, 2026-10-05): under the FULL suite's parallel
  * load the event loop starves and an 8s wall-clock budget expired before
@@ -772,8 +780,8 @@ describe("researcher agent", () => {
  * (setTurnRunner) — the real wiring (chat-handler's handleChatRequest
  * adapter) never fires here, so no teacher model is touched.
  *
- * Timing: the pump polls at 400ms with a 1.5s grace after the gates open —
- * each happy-path test takes ~2s; waitFor tolerates it.
+ * Timing: the pump polls at 400ms with a 750ms grace after the gates open,
+ * both scaled by WAKE_SCALE here; waitFor tolerates any scheduling lag.
  */
 describe("wake pipeline (src/server/jobs.ts)", () => {
 	/** A chat with a finished job ready for delivery. */
@@ -876,7 +884,7 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 		// would deadlock the test (the pump defers until the gate opens).
 		const delivery = deliverJobResult(steer);
 
-		await delay(1200);
+		await delay(1200 * WAKE_SCALE);
 		assert.equal(fired, 0, "no wake while the quiz is pending");
 		assert.equal(jobStore.getJob(jobId)!.status, "running", "job stays running while blocked");
 
@@ -940,7 +948,7 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 
 		const delivery = deliverJobResult(steer);
 
-		await delay(1200);
+		await delay(1200 * WAKE_SCALE);
 		assert.equal(fired, 0, "no wake while the session sits dismissal-paused");
 		assert.equal(jobStore.getJob(jobId)!.status, "running", "the delivery holds (queued, not lost)");
 
@@ -1012,7 +1020,7 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 
 		const delivery = deliverJobResult(steer); // floats — resolves at settlement
 		await waitFor(() => handed.length === 1, 8000, "marker handed to the live agent");
-		await delay(1200);
+		await delay(1200 * WAKE_SCALE);
 		assert.equal(fired, 0, "no wake while the run is live");
 		assert.equal(jobStore.getJob(jobId)!.status, "running", "job flips only at delivery");
 
@@ -1067,7 +1075,7 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 		registerLiveAgent(chat.id, agent as never);
 
 		const delivery = deliverJobResult(handoff);
-		await delay(1200);
+		await delay(1200 * WAKE_SCALE);
 		assert.equal(handed.length, 0, "the handoff was NOT handed to the live agent");
 		assert.equal(fired.length, 0, "no wake while the prober's turn streams");
 
@@ -1106,7 +1114,7 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 			} as never,
 		]);
 		const delivery = deliverJobResult(steer);
-		await delay(300); // let the pump park behind the dangling question
+		await delay(300 * WAKE_SCALE); // let the pump park behind the dangling question
 		assert.equal(handed.length, 0, "nothing to hand to — no live agent");
 
 		// The learner answers: the handler registers the answer run's agent
