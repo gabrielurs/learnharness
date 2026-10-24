@@ -118,7 +118,7 @@ const { graphCostSummary } = await import("../src/core/cost-summary.ts");
 const { graphSnapshot } = await import("../src/core/graph.ts");
 const { catalogContextLimits } = await import("../src/server/model-catalog.ts");
 const { phaseAt3Lh } = await import("../src/core/phases.ts");
-const { danglingQuestionOf } = await import("../src/core/native-messages.ts");
+const { activeProblemOf, danglingQuestionOf } = await import("../src/core/native-messages.ts");
 const { CURRENT_CHAT_VERSION } = await import("../src/core/contracts.ts");
 type ChatRecord = import("../src/core/contracts.ts").ChatRecord;
 type ChatSummary = import("../src/core/contracts.ts").ChatSummary;
@@ -155,6 +155,9 @@ function refListChats(): ChatSummary[] {
 					messageCount: messages.length,
 					phase: phaseAt3Lh(messages),
 					pendingQuestion: danglingQuestionOf(messages) !== null,
+					// the one intentional projection change since the copy: the
+					// declared-but-never-projected field (tests/chat-kind.test.ts)
+					pendingProblem: activeProblemOf(messages) !== null,
 				};
 			} catch {
 				return null;

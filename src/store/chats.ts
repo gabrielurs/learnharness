@@ -147,7 +147,10 @@ function project({ messages, tree, turns, extractions, ...summary }: ChatRecord)
 				// NOT record-derived — the API route merges it (ChatListItem).
 				phase: phaseAt3Lh(messages),
 				pendingQuestion: danglingQuestionOf(messages) !== null,
-			} as ChatSummary,
+				// The sidebar's "Problem waiting" (practice rows): a posed
+				// problem with no clean conclude — the honest active-problem fold.
+				pendingProblem: activeProblemOf(messages) !== null,
+			},
 		};
 	} catch (error) {
 		return { error, recordId: summary.id };
