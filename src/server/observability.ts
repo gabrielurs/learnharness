@@ -23,7 +23,7 @@ import { extractionStatuses, type ExtractionPhase } from "../agent/subagents/ext
 import { chatStore } from "../store/chats.ts";
 import { graphRevision } from "./graph.ts";
 import { catalogContextLimits } from "./model-catalog.ts";
-import { listJobs } from "./jobs.ts";
+import { listAllJobs } from "./jobs.ts";
 import type { JobRecord } from "../core/contracts.ts";
 
 export { abortExtraction, extractionStatuses, type ExtractionPhase, type RunningExtraction } from "../agent/subagents/extraction.ts";
@@ -72,16 +72,24 @@ export function activityFeed(): {
 } {
 	const chats = chatStore.listChats();
 	const limits = catalogContextLimits();
+	// ONE jobs-directory read, grouped by chat (perf round, 2026-10-24 — it
+	// was one full read per chat). Grouping the newest-first list keeps each
+	// chat's per-chat order, so the stable sort below sees the same input.
+	const runningByChat = new Map<string, JobRecord[]>();
+	for (const job of listAllJobs()) {
+		if (job.status !== "running") continue;
+		const group = runningByChat.get(job.chatId);
+		if (group) group.push(job);
+		else runningByChat.set(job.chatId, [job]);
+	}
 	const jobs: ActivityJob[] = [];
 	for (const chat of chats) {
-		for (const job of listJobs(chat.id)) {
-			if (job.status === "running") {
-				jobs.push({
-					...job,
-					title: chat.title ?? chat.id,
-					contextLimit: job.usage ? (limits.get(job.usage.model) ?? null) : null,
-				});
-			}
+		for (const job of runningByChat.get(chat.id) ?? []) {
+			jobs.push({
+				...job,
+				title: chat.title ?? chat.id,
+				contextLimit: job.usage ? (limits.get(job.usage.model) ?? null) : null,
+			});
 		}
 	}
 	const extractions: ActivityExtraction[] = extractionStatuses().map((run) => ({

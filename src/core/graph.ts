@@ -536,13 +536,14 @@ export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 	}
 	const sessions: Record<string, string> = {};
 	const fileSources: Record<string, string> = {};
+	const chatTitles = deps.chatStore.chatTitles();
+	const notesSources = new Map(deps.graphStore.readSources().map((s) => [s.id, s]));
 	for (const id of sourceIds) {
-		const chat = deps.chatStore.getChat(id);
-		if (chat) {
-			sessions[id] = chat.title;
+		if (chatTitles.has(id)) {
+			sessions[id] = chatTitles.get(id)!;
 			continue;
 		}
-		const source = deps.graphStore.readSources().find((s) => s.id === id);
+		const source = notesSources.get(id);
 		if (source) fileSources[id] = source.filePath;
 	}
 

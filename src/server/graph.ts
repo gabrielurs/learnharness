@@ -30,13 +30,8 @@ export function graphView(): GraphSnapshot {
  *  prices.ts) — nothing here stores or caches money. */
 export function graphCosts(): GraphCostSummary {
 	const chats = stores.chatStore
-		.listChats()
-		.flatMap((summary) => {
-			const record = stores.chatStore.getChat(summary.id);
-			return record?.extractions?.length
-				? [{ title: record.title ?? summary.id, extractions: record.extractions }]
-				: [];
-		});
+		.chatExtractions()
+		.map(({ title, extractions }) => ({ title, extractions }));
 	const sources = stores.graphStore
 		.readSources()
 		.filter((s) => s.extractions?.length)

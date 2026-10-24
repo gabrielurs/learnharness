@@ -39,6 +39,13 @@ export interface ChatStore {
 	getChat(id: string): ChatRecord | null;
 	/** All sessions, newest activity first (the sidebar's list view). */
 	listChats(): ChatSummary[];
+	/** id → title for every READABLE record — the same set getChat answers
+	 *  non-null for (a record whose summary projection fails still has its
+	 *  title). The graph snapshot's session labels. */
+	chatTitles(): Map<string, string>;
+	/** Each LISTED session's extraction-usage log, in listChats order;
+	 *  sessions without runs are omitted. The graph cost pill's chat input. */
+	chatExtractions(): Array<{ id: string; title: string; extractions: ExtractionRunUsage[] }>;
 	/** Persist the full native message list (the record IS the agent
 	 * state — Wave B, owner-approved 2026-09-26). */
 	saveMessages(id: string, messages: LhMessage[]): void;
@@ -149,6 +156,10 @@ export interface JobStore {
 	updateJob(id: string, patch: JobPatch): JobRecord | null;
 	/** All jobs for a chat, newest activity first. */
 	listJobs(chatId: string): JobRecord[];
+	/** Every job across all chats in ONE directory read, newest activity
+	 *  first — the cross-chat views (activity feed, recovery sweep) group
+	 *  this instead of calling listJobs once per chat. */
+	listAllJobs(): JobRecord[];
 	/** The job fulfilling a given tool part, if any (spawn-hook dedup). */
 	findJobByToolCallId(chatId: string, toolCallId: string): JobRecord | null;
 	/** Delete every job record for a chat — running or finished (session-

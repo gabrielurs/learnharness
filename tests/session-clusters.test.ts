@@ -65,6 +65,7 @@ function fakeStores(
 			(over.chats ?? []).map((c) => ({ ...c, messageCount: 0 }) as unknown as ChatSummary),
 		getChat: (id: string) =>
 			((over.chats ?? []).find((c) => c.id === id) as unknown as ChatSummary) ?? undefined,
+		chatTitles: () => new Map((over.chats ?? []).map((c) => [c.id, c.title])),
 	} as unknown as ChatStore;
 	return { chatStore, graphStore };
 }

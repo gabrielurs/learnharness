@@ -15,6 +15,7 @@ import { emit } from "../core/events.ts";
 import type { JobStore } from "../core/ports.ts";
 import type { CreateJobInit, JobPatch } from "../core/ports.ts";
 import type { JobRecord } from "../core/contracts.ts";
+import { writeFileAtomic } from "./atomic-write.ts";
 
 /** Background jobs (data/jobs). Not in config.ts PATHS (orchestrator-owned). */
 const JOBS_DIR = path.join(PATHS.data, "jobs");
@@ -41,7 +42,7 @@ function createJob(init: CreateJobInit): JobRecord {
 		updatedAt: now,
 	};
 	fs.mkdirSync(JOBS_DIR, { recursive: true });
-	fs.writeFileSync(jobFile(record.id), JSON.stringify(record, null, "\t"), "utf-8");
+	writeFileAtomic(jobFile(record.id), JSON.stringify(record, null, "\t"));
 	emit("jobs-changed", { chatId: init.chatId });
 	return record;
 }
@@ -61,7 +62,7 @@ function updateJob(id: string, patch: JobPatch): JobRecord | null {
 	const record = getJob(id);
 	if (!record) return null;
 	const next: JobRecord = { ...record, ...patch, updatedAt: patch.updatedAt ?? new Date().toISOString() };
-	fs.writeFileSync(jobFile(id), JSON.stringify(next, null, "\t"), "utf-8");
+	writeFileAtomic(jobFile(id), JSON.stringify(next, null, "\t"));
 	// EVERY write, not just status flips: progress-line updates must reach
 	// the dispatch cards (the view debounces the fetch bursts). A missing id
 	// wrote nothing and stays silent.
@@ -71,13 +72,20 @@ function updateJob(id: string, patch: JobPatch): JobRecord | null {
 
 /** All jobs for a chat, newest activity first. */
 function listJobs(chatId: string): JobRecord[] {
+	return listAllJobs().filter((j) => j.chatId === chatId);
+}
+
+/** Every job, newest activity first — one directory read. The sort is
+ *  stable over readdir order, so filtering it by chat yields exactly the
+ *  per-chat order listJobs always had (ties included). */
+function listAllJobs(): JobRecord[] {
 	try {
 		fs.mkdirSync(JOBS_DIR, { recursive: true });
 		return fs
 			.readdirSync(JOBS_DIR)
 			.filter((f) => f.endsWith(".json"))
 			.map((f) => getJob(f.slice(0, -5)))
-			.filter((j): j is JobRecord => j !== null && j.chatId === chatId)
+			.filter((j): j is JobRecord => j !== null)
 			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 	} catch {
 		return [];
@@ -114,6 +122,7 @@ export const jobStore: JobStore = {
 	getJob,
 	updateJob,
 	listJobs,
+	listAllJobs,
 	findJobByToolCallId,
 	deleteJobsForChat,
 };

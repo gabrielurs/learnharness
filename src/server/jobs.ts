@@ -650,8 +650,11 @@ export function recoverStaleJobs(): void {
 	if (now - s.lastSweepAt < SWEEP_THROTTLE_MS) return;
 	s.lastSweepAt = now;
 	try {
+		// One jobs-directory read, walked in the same chat-then-job order the
+		// per-chat listJobs loop had (perf round, 2026-10-24).
+		const jobs = stores.jobStore.listAllJobs();
 		for (const chat of stores.chatStore.listChats()) {
-			for (const job of stores.jobStore.listJobs(chat.id)) {
+			for (const job of jobs.filter((j) => j.chatId === chat.id)) {
 				if (job.status !== "running") continue;
 				if (isJobLive(job.id)) continue; // provably executing here — never re-run beside it
 				if (!stores.chatStore.getChat(job.chatId)) continue;
@@ -680,4 +683,10 @@ export function recoverStaleJobs(): void {
 export function listJobs(chatId: string): JobRecord[] {
 	if (process.env.NODE_ENV !== "test") recoverStaleJobs();
 	return stores.jobStore.listJobs(chatId);
+}
+
+/** The activity feed's entry: every job in one read (+ the same lazy recovery). */
+export function listAllJobs(): JobRecord[] {
+	if (process.env.NODE_ENV !== "test") recoverStaleJobs();
+	return stores.jobStore.listAllJobs();
 }
