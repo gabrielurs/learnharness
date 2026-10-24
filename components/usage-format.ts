@@ -40,7 +40,9 @@ export function prettyModel(id: string, qualified = false): string {
 	const { provider, id: bare } = splitQualified(id);
 	const short = bare.includes("/") ? bare.slice(bare.lastIndexOf("/") + 1) : bare;
 	const parts = short.split("-");
-	const trimmed = /^\d+$/.test(parts[parts.length - 1] ?? "") ? parts.slice(0, -1) : parts;
+	// Only DATE-like tails drop (-0902, -20251001): a short numeric tail is
+	// the version itself (claude-sonnet-5-5 stays whole).
+	const trimmed = /^\d{4,}$/.test(parts[parts.length - 1] ?? "") ? parts.slice(0, -1) : parts;
 	// No auto-capitalization, dashes KEPT (owner rounds 4-5, 2026-10-05):
 	// model names render exactly as their providers write them.
 	const pretty = trimmed.join("-");

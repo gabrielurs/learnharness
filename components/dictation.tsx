@@ -114,6 +114,61 @@ export const DEEPGRAM_KEY_ID = "DEEPGRAM_API_KEY";
  * it and deep-links Settings → Keys → the Deepgram row. */
 export const DICTATION_KEYLESS = "Dictation needs a Deepgram key";
 
+/* The BROWSER engine (fork, 2026-10-24 — owner: "always the browser"):
+ * the Web Speech API transcribes with the browser's own recognizer —
+ * Apple's in Safari, Google's in Chrome — so dictation needs no key.
+ * Where the API is missing (Electron, Firefox) the Deepgram engine below
+ * stays the path. Same UX either way: optimistic meter (the worklet still
+ * drives it; its audio frames are simply unused), finals buffered and
+ * flushed once at the end, Esc discards. */
+
+/** The slice of the Web Speech API the engine uses (lib.dom coverage of
+ *  the webkit-prefixed constructor varies). */
+type SpeechRecognitionLike = {
+	lang: string;
+	continuous: boolean;
+	interimResults: boolean;
+	onstart: (() => void) | null;
+	onresult: ((ev: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null;
+	onerror: ((ev: { error: string }) => void) | null;
+	onend: (() => void) | null;
+	start: () => void;
+	stop: () => void;
+	abort: () => void;
+};
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
+/** The browser's recognizer constructor, or null where there is none. */
+export function browserSpeechRecognition(win: unknown = typeof window === "undefined" ? undefined : window): SpeechRecognitionCtor | null {
+	const w = win as { SpeechRecognition?: SpeechRecognitionCtor; webkitSpeechRecognition?: SpeechRecognitionCtor } | undefined;
+	return w?.SpeechRecognition ?? w?.webkitSpeechRecognition ?? null;
+}
+
+/** How long one browser-engine segment listens before it is renewed —
+ *  under Safari's ~1 minute session cap. */
+const BROWSER_SEGMENT_MS = 45_000;
+
+/** A recognizer error → the short line the button shows (null = benign:
+ *  silence, or our own abort). */
+export function speechErrorMessage(error: string): string | null {
+	switch (error) {
+		case "no-speech":
+		case "aborted":
+			return null;
+		case "not-allowed":
+		case "service-not-allowed":
+			return "Microphone or speech recognition permission denied";
+		case "audio-capture":
+			return "No microphone available";
+		case "network":
+			return "Speech recognition service unreachable";
+		case "language-not-supported":
+			return "Dictation language not supported by this browser";
+		default:
+			return `Dictation failed (${error})`;
+	}
+}
+
 /** Mint a fresh short-lived token (the route holds the real key
  *  server-side). Module-level: the start path's warm cache and the
  *  reconnect path both bottom out here. The keyless 503 (no
@@ -315,6 +370,13 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 	/** Resolvers waiting for the run to fully end (finish(), owner
 	 *  2026-10-01): released by cleanup() — every terminal path runs it. */
 	const waitersRef = useRef<Array<() => void>>([]);
+	/** The browser engine's live recognizer (null on the Deepgram engine). */
+	const recogRef = useRef<SpeechRecognitionLike | null>(null);
+	/** Set by stop(): the recognizer's end is then the run's end (an end
+	 *  without it is the browser timing out on silence → restart). */
+	const recogStoppingRef = useRef(false);
+	/** The browser engine's segment-renewal timer. */
+	const rotateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	/** Flush the buffered transcript into the primary input — question claim
 	 *  first, composer fallback. Called exactly once per run, at cleanup; the
@@ -336,6 +398,18 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 			safetyRef.current = null;
 		}
 		pendingRef.current = [];
+		if (rotateTimerRef.current) {
+			clearTimeout(rotateTimerRef.current);
+			rotateTimerRef.current = null;
+		}
+		const recog = recogRef.current;
+		recogRef.current = null;
+		if (recog) {
+			recog.onstart = recog.onresult = recog.onerror = recog.onend = null;
+			try {
+				recog.abort();
+			} catch {}
+		}
 		for (const track of streamRef.current?.getTracks() ?? []) track.stop();
 		streamRef.current = null;
 		sourceRef.current?.disconnect();
@@ -356,8 +430,8 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		// target field with the dictated tail already in it.
 		for (const w of waitersRef.current.splice(0)) w();
 		// Pre-mint for the next run (mitigation D) — best-effort; a keyless
-		// page just doesn't warm.
-		warmTokens.refresh();
+		// page just doesn't warm. The browser engine needs no token.
+		if (!browserSpeechRecognition()) warmTokens.refresh();
 	}, []);
 
 	/** Open the Deepgram socket and wire its messages. `gen` guards staleness. */
@@ -425,6 +499,164 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		[cleanup],
 	);
 
+	/** Acquire the mic and wire the meter/capture graph for run `gen`.
+	 *  Resolves false when the run went stale or failed (the error is set
+	 *  and the run cleaned up). Shared by both engines: the browser engine
+	 *  only reads the levels (its recognizer captures on its own). */
+	const openCapture = useCallback(
+		async (gen: number): Promise<boolean> => {
+			// The mic is the long pole (macOS HAL + APM init). 127.0.0.1 is a
+			// secure context, so getUserMedia works without TLS; macOS TCC
+			// prompts on first use.
+			try {
+				const stream = await navigator.mediaDevices.getUserMedia({
+					audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+				});
+				if (gen !== genRef.current) {
+					for (const track of stream.getTracks()) track.stop();
+					return false;
+				}
+				streamRef.current = stream;
+
+				// Mitigation C: app-lifetime context + memoized worklet module —
+				// per-run costs (context creation, module fetch) are gone.
+				const { ctx, module } = ensureAudioGraph();
+				await module;
+				if (ctx.state === "suspended") await ctx.resume();
+				if (gen !== genRef.current) return false;
+
+				const worklet = new AudioWorkletNode(ctx, "pcm-capture");
+				workletRef.current = worklet;
+				worklet.port.onmessage = (e) => {
+					const msg = e.data as { type: string; rms?: number; buffer?: ArrayBuffer };
+					if (msg.type === "level") {
+						levelRef.current = msg.rms ?? 0; // never reset to zero (dictate pattern)
+					} else if (msg.type === "audio") {
+						if (recogRef.current) return; // browser engine: levels only
+						const ws = wsRef.current;
+						if (ws && ws.readyState === WebSocket.OPEN) ws.send(msg.buffer!);
+						// Mitigation A: not OPEN yet (handshake or reconnect gap) —
+						// queue, capped; the open handler flushes in order.
+						else {
+							pendingRef.current.push(msg.buffer!);
+							if (pendingRef.current.length > 256) pendingRef.current.shift();
+						}
+					}
+				};
+				const source = ctx.createMediaStreamSource(stream);
+				sourceRef.current = source;
+				source.connect(worklet);
+				// Pull the graph with silence out (the worklet writes no output) —
+				// an unconnected worklet node is never clocked.
+				worklet.connect(ctx.destination);
+				return gen === genRef.current;
+			} catch (e) {
+				if (gen !== genRef.current) return false;
+				const msg =
+					e instanceof DOMException && (e.name === "NotAllowedError" || e.name === "SecurityError")
+						? "Microphone permission denied"
+						: e instanceof Error
+							? e.message
+							: "mic unavailable";
+				setError(msg);
+				cleanup();
+				return false;
+			}
+		},
+		[cleanup],
+	);
+
+	/** The browser engine's run, in SEGMENTS: one fresh recognizer per
+	 *  ~45s. Safari caps a recognition session at about a minute and, in
+	 *  continuous mode, silently stops delivering text past it (owner live
+	 *  test: ~715 chars, the meter still moving) — so each segment is ended
+	 *  early on purpose and the next one starts at its end. The first
+	 *  recognizer starts SYNCHRONOUSLY (inside the click gesture — Safari
+	 *  requires it); the meter's mic opens beside it.
+	 *
+	 *  Each segment keeps the LATEST transcript per result slot (interims
+	 *  included) and commits it into the run's buffer when the segment ends:
+	 *  text survives even when a browser never marks a result final. */
+	const startBrowser = useCallback(
+		(gen: number, Recognition: SpeechRecognitionCtor) => {
+			recogStoppingRef.current = false;
+			const t0 = performance.now();
+			const dbg = (...a: unknown[]) => console.info(`[dictation +${((performance.now() - t0) / 1000).toFixed(1)}s]`, ...a);
+
+			const spawn = (): boolean => {
+				const recog = new Recognition();
+				recog.lang = navigator.language || "es-ES";
+				recog.continuous = true;
+				recog.interimResults = true;
+				const slots: string[] = [];
+				const commit = () => {
+					const text = slots.map((t) => t.trim()).filter(Boolean).join(" ");
+					slots.length = 0;
+					if (text) bufferRef.current.push(text);
+				};
+				recog.onstart = () => {
+					dbg("segment start");
+					if (gen !== genRef.current) return;
+					setPhase("recording");
+					if (rotateTimerRef.current) clearTimeout(rotateTimerRef.current);
+					rotateTimerRef.current = setTimeout(() => {
+						if (gen !== genRef.current || recogStoppingRef.current || recogRef.current !== recog) return;
+						dbg("rotate");
+						try {
+							recog.stop(); // → end → commit → next segment
+						} catch {}
+					}, BROWSER_SEGMENT_MS);
+				};
+				recog.onresult = (ev) => {
+					if (gen !== genRef.current) return;
+					for (let i = ev.resultIndex; i < ev.results.length; i++) slots[i] = ev.results[i]![0]?.transcript ?? "";
+					dbg("result", { slots: slots.length, chars: slots.join(" ").length });
+				};
+				recog.onerror = (ev) => {
+					dbg("error", ev.error);
+					if (gen !== genRef.current) return;
+					const msg = speechErrorMessage(ev.error);
+					if (!msg) return; // silence / our own abort — the end handler decides
+					commit();
+					setError(msg);
+					cleanup();
+				};
+				recog.onend = () => {
+					dbg("segment end", { stopping: recogStoppingRef.current });
+					if (gen !== genRef.current || recogRef.current !== recog) return;
+					commit();
+					// Our stop: every segment has landed — finalize.
+					if (recogStoppingRef.current) {
+						cleanup();
+						return;
+					}
+					// Rotation or the browser's own end: the next segment.
+					if (!spawn()) {
+						setError("The browser paused dictation — press Dictate to continue");
+						cleanup();
+					}
+				};
+				recogRef.current = recog;
+				try {
+					recog.start();
+					return true;
+				} catch (e) {
+					dbg("segment start failed", e);
+					recogRef.current = null;
+					return false;
+				}
+			};
+
+			if (!spawn()) {
+				setError("Speech recognition unavailable");
+				cleanup();
+				return;
+			}
+			void openCapture(gen);
+		},
+		[cleanup, openCapture],
+	);
+
 	const start = useCallback(async () => {
 		dictationActiveFlag = true;
 		setError(null);
@@ -434,69 +666,19 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		pendingRef.current = []; // fresh run, fresh queue (mitigation A)
 		const gen = ++genRef.current;
 
-		// Mitigation D: the warm token (pre-minted at mount / after the last
-		// run) resolves ~instantly; a cold/keyless mint surfaces below. The
-		// mic is the long pole (macOS HAL + APM init) and gates everything —
-		// the token runs concurrently with it. 127.0.0.1 is a secure
-		// context, so getUserMedia works without TLS; macOS TCC prompts on
-		// first use.
-		const tokenPromise = warmTokens.mint();
-		tokenPromise.catch(() => {}); // surfaced below; no unhandled rejection
-		const micPromise = navigator.mediaDevices.getUserMedia({
-			audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-		});
-		let stream: MediaStream;
-		try {
-			stream = await micPromise;
-			if (gen !== genRef.current) {
-				for (const track of stream.getTracks()) track.stop();
-				return;
-			}
-			streamRef.current = stream;
-
-			// Mitigation C: app-lifetime context + memoized worklet module —
-			// per-run costs (context creation, module fetch) are gone.
-			const { ctx, module } = ensureAudioGraph();
-			await module;
-			if (ctx.state === "suspended") await ctx.resume();
-			if (gen !== genRef.current) return;
-
-			const worklet = new AudioWorkletNode(ctx, "pcm-capture");
-			workletRef.current = worklet;
-			worklet.port.onmessage = (e) => {
-				const msg = e.data as { type: string; rms?: number; buffer?: ArrayBuffer };
-				if (msg.type === "level") {
-					levelRef.current = msg.rms ?? 0; // never reset to zero (dictate pattern)
-				} else if (msg.type === "audio") {
-					const ws = wsRef.current;
-					if (ws && ws.readyState === WebSocket.OPEN) ws.send(msg.buffer!);
-					// Mitigation A: not OPEN yet (handshake or reconnect gap) —
-					// queue, capped; the open handler flushes in order.
-					else {
-						pendingRef.current.push(msg.buffer!);
-						if (pendingRef.current.length > 256) pendingRef.current.shift();
-					}
-				}
-			};
-			const source = ctx.createMediaStreamSource(stream);
-			sourceRef.current = source;
-			source.connect(worklet);
-			// Pull the graph with silence out (the worklet writes no output) —
-			// an unconnected worklet node is never clocked.
-			worklet.connect(ctx.destination);
-		} catch (e) {
-			if (gen !== genRef.current) return;
-			const msg =
-				e instanceof DOMException && (e.name === "NotAllowedError" || e.name === "SecurityError")
-					? "Microphone permission denied"
-					: e instanceof Error
-						? e.message
-						: "mic unavailable";
-			setError(msg);
-			cleanup();
+		// The browser engine wherever the platform has one (owner: always).
+		const Recognition = browserSpeechRecognition();
+		if (Recognition) {
+			startBrowser(gen, Recognition);
 			return;
 		}
-		if (gen !== genRef.current) return;
+
+		// Mitigation D: the warm token (pre-minted at mount / after the last
+		// run) resolves ~instantly; a cold/keyless mint surfaces below. The
+		// mic gates everything — the token runs concurrently with it.
+		const tokenPromise = warmTokens.mint();
+		tokenPromise.catch(() => {}); // surfaced below; no unhandled rejection
+		if (!(await openCapture(gen))) return;
 		let token: string;
 		try {
 			token = await tokenPromise;
@@ -510,7 +692,7 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		// Mitigation B: the handshake fires the moment the graph is live,
 		// overlapping any remaining token wait — mic-gated, never before it.
 		openSocket(gen, token);
-	}, [openSocket, cleanup]);
+	}, [openSocket, cleanup, openCapture, startBrowser]);
 
 	const stop = useCallback(() => {
 		const gen = genRef.current;
@@ -525,6 +707,23 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		sourceRef.current = null;
 		workletRef.current?.disconnect();
 		workletRef.current = null;
+
+		// Browser engine: the recognizer delivers its last finals, then ends
+		// (→ cleanup in its end handler); the safety net covers a lost end.
+		const recog = recogRef.current;
+		if (recog) {
+			recogStoppingRef.current = true;
+			try {
+				recog.stop();
+			} catch {
+				cleanup();
+				return;
+			}
+			safetyRef.current = setTimeout(() => {
+				if (gen === genRef.current) cleanup();
+			}, 3000);
+			return;
+		}
 
 		const ws = wsRef.current;
 		if (ws && ws.readyState === WebSocket.OPEN) {
@@ -585,7 +784,9 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 	// page owns ONE hook instance, and only the mounted page's listener is
 	// attached.
 	useEffect(() => {
-		warmTokens.refresh(); // pre-mint at mount (mitigation D) — silent if keyless
+		// Pre-mint at mount (mitigation D) — silent if keyless; the browser
+		// engine needs no token.
+		if (!browserSpeechRecognition()) warmTokens.refresh();
 	}, []);
 	useEffect(() => {
 		window.addEventListener("lh:kbd-toggle-dictation", toggle);

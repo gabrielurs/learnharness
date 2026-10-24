@@ -20,6 +20,8 @@
 import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { piModels } from "../agent/models.ts";
+import { CLAUDE_CODE_PROVIDER, claudeCodeAvailable } from "../agent/claude-code/provider.ts";
+import { CLAUDE_BIN_ENV } from "../agent/claude-code/cli.ts";
 import { settingsStore } from "../store/settings.ts";
 import { effectiveSettings } from "./stores.ts";
 import { keyValue } from "./keys.ts";
@@ -121,11 +123,15 @@ export function catalogSlots(): SlotPins {
  *  with keyPresent read env-wins through the keys seam, fresh per call —
  *  saving a key immediately federates the provider into the picker. */
 export function catalogProviders(): CatalogProvider[] {
-	return AUTH_PROVIDER_KEYS.map((p) => ({
+	const keyed = AUTH_PROVIDER_KEYS.map((p) => ({
 		id: p.id,
 		envVar: p.envVar,
 		keyPresent: keyValue(p.envVar) !== undefined,
-	})).sort((a, b) => a.id.localeCompare(b.id));
+	}));
+	// The Claude Code bridge takes no key: it federates in when the `claude`
+	// CLI is installed (its envVar names the binary-location override).
+	const claudeCode = { id: CLAUDE_CODE_PROVIDER, envVar: CLAUDE_BIN_ENV, keyPresent: claudeCodeAvailable() };
+	return [...keyed, claudeCode].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /** The providers whose key is present — the picker federates exactly

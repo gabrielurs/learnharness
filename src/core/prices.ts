@@ -1644,6 +1644,15 @@ export const PRICES: Record<string, ModelPrice> = {
 
 // ─── Pure helpers (folds + cost inference) ───────────────────────────────────
 
+/** App-registered providers pi-ai's catalogs don't ship (hand-kept — the
+ *  generated PRICES above is overwritten by the sync). The Claude Code
+ *  bridge (2026-10-24) runs on the user's subscription: priced at zero, so
+ *  its sessions read $0 instead of unpriced. */
+export const APP_PROVIDER_PRICES: Record<string, ModelPrice> = {
+	"claude-code:claude-opus-5-5": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	"claude-code:claude-sonnet-5-5": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+};
+
 /** Sum a list of per-step usages into one CallUsage. A field stays
  *  undefined when EVERY step left it unreported — absent is not zero. */
 export function sumSteps(steps: readonly CallUsage[]): CallUsage {
@@ -1665,7 +1674,7 @@ export function callCost(
 	usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number },
 	model: string,
 ): number | null {
-	const price = PRICES[model];
+	const price = PRICES[model] ?? APP_PROVIDER_PRICES[model];
 	if (!price) return null;
 	if (usage.inputTokens === undefined || usage.outputTokens === undefined) return null;
 	const cacheRead = usage.cacheReadTokens ?? 0;

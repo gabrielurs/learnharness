@@ -21,12 +21,14 @@ import { readTool } from "./read.ts";
 import { lsTool } from "./ls.ts";
 import { findTool } from "./find.ts";
 import { grepTool } from "./grep.ts";
+import { webFetchTool } from "./web.ts";
 import { jobTools, type JobToolContext } from "./jobs.ts";
 import { proberGraphTools, type GraphToolContext } from "./graph.ts";
 import { activeProblemOf } from "../../core/native-messages.ts";
 import type { LhMessage } from "../../core/native-messages.ts";
 import { concludeResult, invalidInputResult, problemResult } from "../tool-execute.ts";
 import { healEncodedArguments, healToolRecord } from "./heal.ts";
+import { codeExerciseProblems, type CodeExercise } from "../../core/contracts/code.ts";
 
 
 /** The record-reading context the gates need (the plan-tools idiom). */
@@ -67,6 +69,29 @@ export function createPracticeGate(ctx: PracticeToolContext): PracticeGate {
 	return { problemActive: record ? activeProblemOf(record.messages) !== null : false };
 }
 
+/** A coding exercise attached to a pose (fork, 2026-10-24): the learner
+ *  gets a C/C++ editor and the tests run on their machine. Shared by the
+ *  practice `problem` and the teacher's coding question. */
+export function codeExerciseObject(tool: string) {
+	return Type.Object(
+		{
+			language: Type.Union([Type.Literal("c"), Type.Literal("cpp")], { description: "REQUIRED — c or cpp (bare word)." }),
+			starterCode: Type.Optional(
+				Type.String({ description: "What the editor opens with: includes, a main() skeleton, the function signature to fill. Never the solution." }),
+			),
+			tests: Type.Array(
+				Type.Object({
+					stdin: Type.String({ description: "The program's standard input (\"\" when it reads none)." }),
+					expected: Type.String({ description: "The EXACT standard output a correct program prints (trailing whitespace is ignored)." }),
+					hidden: Type.Optional(Type.Boolean({ description: "true = runs on submit only, data never shown to the learner (edge cases)." })),
+				}),
+				{ minItems: 1, description: "REQUIRED — stdin → expected stdout cases. Data only: they never execute as code." },
+			),
+		},
+		{ description: `A CODING ${tool}: the learner writes C/C++ in an editor and runs it against these tests on their own machine.` },
+	);
+}
+
 // ─── problem: the pose ───────────────────────────────────────────────────────
 
 export const problemInputObject = Type.Object({
@@ -90,6 +115,7 @@ export const problemInputObject = Type.Object({
 	modelSolution: Type.String({
 		description: "REQUIRED — the full solution, moves in order, committed BEFORE the learner sees the problem. This IS the reveal — conclude shows it verbatim; never re-author it.",
 	}),
+	code: Type.Optional(codeExerciseObject("problem")),
 });
 
 export type ProblemInput = Static<typeof problemInputObject>;
@@ -153,6 +179,10 @@ export function problemTool(
 						`target ${JSON.stringify(unknown)} is not a known proposition — targets must be proposition ids from the session context; if the material is not in the map, omit target entirely`,
 					]);
 				}
+			}
+			if (input.code) {
+				const problems = codeExerciseProblems(input.code as CodeExercise);
+				if (problems.length > 0) return invalidInputResult("problem", problems);
 			}
 			gate.problemActive = true;
 			return problemResult();
@@ -242,6 +272,7 @@ export function practiceTools(ctx: PracticeToolContext): Record<string, AgentToo
 		ls: lsTool,
 		find: findTool,
 		grep: grepTool,
+		web_fetch: webFetchTool,
 		...(jobs?.research ? { research: jobs.research } : {}),
 		...(jobs ? { pdf: jobs.pdf! } : {}),
 		...(ctx.graph ? proberGraphTools(ctx.graph) : {}),

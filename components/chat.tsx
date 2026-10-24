@@ -39,7 +39,9 @@ import {
 	textPartMessageId,
 	kbdEventForAction as kbdEventForChat,
 	needsContinuation,
+	trailingFailure,
 	type ChatInput,
+	type CodeExercise,
 	type ChatSettings,
 	type LhMessage,
 	type ModelSlotName,
@@ -456,6 +458,8 @@ export function Chat({
 
 	const localStream = status === "submitted" || status === "streaming";
 	const busy = localStream || turnInFlight;
+	/** The record ends on a failed model call → the Retry affordance. */
+	const failedTurn = trailingFailure(nativeMessages);
 	const busyRef = useRef(busy);
 	busyRef.current = busy;
 
@@ -1571,9 +1575,24 @@ export function Chat({
 									</Shimmer>
 								</span>
 							)}
-							{error && (
-								<div className="rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm">
-									Something went wrong: {error.message}
+							{(error || (failedTurn && !busy)) && (
+								<div className="flex items-center gap-3 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm">
+									<span className="min-w-0 flex-1">Something went wrong: {error?.message ?? failedTurn}</span>
+									{/* Retry (fork, 2026-10-24): a failed model call strands the
+									    turn — re-run it from the learner's last input. */}
+									{failedTurn && !busy && (
+										<button
+											type="button"
+											data-testid="retry-turn"
+											onClick={() => {
+												clearError();
+												void send({ type: "retry" });
+											}}
+											className="shrink-0 rounded-md border border-destructive/50 px-2.5 py-1 font-ui text-xs font-medium text-destructive transition-colors hover:bg-destructive/20"
+										>
+											Retry
+										</button>
+									)}
 								</div>
 							)}
 						</div>
@@ -2307,7 +2326,7 @@ function DockOverlay({
 							) : practice ? (
 								<PracticeDock
 									problemCallId={practice.toolCallId}
-									input={practice.input as { statement: string }}
+									input={practice.input as { statement: string; code?: CodeExercise }}
 									expanded={expanded}
 									onExpand={() => {
 										setExpanded(true);

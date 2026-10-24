@@ -45,6 +45,10 @@ export type ChatInput =
 	| { type: "text"; text: string }
 	| { type: "answer"; toolCallId: string; answer: QuestionAnswerData }
 	| { type: "continue" }
+	/** Re-run a turn whose model call FAILED (fork, 2026-10-24): the failed
+	 *  assistant message(s) at the record's tail are dropped and the turn
+	 *  runs again from the input that preceded them. */
+	| { type: "retry" }
 	/** The practice dock's two buttons (owner, 2026-10-04): the learner's
 	 *  thinking on the ACTIVE problem — one lane (owner 2026-10-05):
 	 *  whether it claims an answer is read from the text. One
@@ -170,6 +174,8 @@ export function parseChatInput(input: unknown): ChatInput {
 			return { type: "answer", toolCallId: i.toolCallId, answer: i.answer as QuestionAnswerData };
 		case "continue":
 			return { type: "continue" };
+		case "retry":
+			return { type: "retry" };
 		case "thinking":
 			if (typeof i.problemCallId !== "string" || i.problemCallId.length === 0) {
 				throw new ChatInputError("thinking input requires problemCallId");
@@ -210,6 +216,9 @@ export function inputAppends(
 		}
 		case "continue":
 			return dismissalConclusion(record);
+		case "retry":
+			if (!trailingFailure(record.messages)) throw new ChatInputError("retry input: the session's last turn did not fail");
+			return [];
 		case "thinking": {
 			const active = activeProblemOf(record.messages);
 			if (!active || active.toolCallId !== input.problemCallId) {
@@ -246,4 +255,27 @@ function dismissalConclusion(record: { messages: LhMessage[] }): LhMessage[] {
 /** Is this tool name a question tool (dock-owned, answer-gated)? */
 export function isQuestionTool(name: string): boolean {
 	return (QUESTION_TOOLS as readonly string[]).includes(name);
+}
+
+// ─── retry (fork, 2026-10-24) ────────────────────────────────────────────────
+
+function isFailedAssistant(m: LhMessage): boolean {
+	return (m as { role?: string }).role === "assistant" && (m as { stopReason?: string }).stopReason === "error";
+}
+
+/** The error text when the record ENDS on a failed model call (the turn
+ *  died: nothing will continue it on its own), else null. */
+export function trailingFailure(messages: readonly LhMessage[]): string | null {
+	const last = messages.at(-1);
+	if (!last || !isFailedAssistant(last)) return null;
+	return (last as { errorMessage?: string }).errorMessage || "The model call failed.";
+}
+
+/** The record a retry runs from: every failed assistant message at the
+ *  tail dropped (pi cannot continue from an assistant message, and the
+ *  failed one carries nothing worth keeping). */
+export function withoutTrailingFailures(messages: readonly LhMessage[]): LhMessage[] {
+	let end = messages.length;
+	while (end > 0 && isFailedAssistant(messages[end - 1]!)) end--;
+	return messages.slice(0, end);
 }

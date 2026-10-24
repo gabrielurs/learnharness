@@ -6,8 +6,9 @@ import { MessageResponse } from "@/components/ai-elements/message";
 import { Button } from "@/components/ui/button";
 import { joinDictation, useDictationTarget } from "@/components/dictation";
 import { useEnterSubmits } from "@/components/enter-submits";
+import { CodeExercisePanel } from "@/components/code-exercise";
 import { cn } from "@/lib/utils";
-import { repairMathForDisplay } from "@/src/core";
+import { renderCodeSubmission, repairMathForDisplay, type CodeExercise, type CodeRunResult } from "@/src/core";
 
 /**
  * The practice dock (practice sessions, owner design 2026-10-04): an
@@ -34,7 +35,7 @@ export interface PracticeDockProps {
 	problemCallId: string;
 	/** The pose's arguments — only the statement is the learner's (the
 	 *  mode badge would edge toward announcing the target; dropped). */
-	input: { statement: string };
+	input: { statement: string; code?: CodeExercise };
 	/** Collapse state, owned by the DockOverlay. */
 	expanded: boolean;
 	onExpand: () => void;
@@ -83,6 +84,18 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 	 * while the dock is — collapsed bar included (the trace survives). */
 	useEnterSubmits(submit);
 
+	/* A CODING problem (fork, 2026-10-24): Submit code runs every test and
+	 * sends the code + results — with any thinking typed so far — as ONE
+	 * submission on the same lane. */
+	const submitCode = (source: string, result: CodeRunResult) => {
+		if (compactionRunning || !input.code) return;
+		const trace = thinkingRef.current.trim();
+		thinkingRef.current = "";
+		setThinking("");
+		const code = renderCodeSubmission(input.code.language, source, result);
+		onSubmit(trace ? `${trace}\n\n${code}` : code);
+	};
+
 	/* ── the collapsed bar ── */
 	if (!expanded) {
 		return (
@@ -112,6 +125,18 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 					<MessageResponse>{typeof input.statement === "string" ? repairMathForDisplay(input.statement) : input.statement}</MessageResponse>
 				</div>
 			</div>
+
+			{input.code && (
+				<div className="px-4 pb-2" data-testid="practice-code">
+					<CodeExercisePanel
+						exercise={input.code}
+						draftKey={problemCallId}
+						onSubmit={submitCode}
+						submitLabel="Submit code"
+						disabled={compactionRunning}
+					/>
+				</div>
+			)}
 
 			{/* The learner's half: Enter SENDS (owner round 2, 2026-10-05);
 			    Shift+Enter makes a newline — less to decide about. */}

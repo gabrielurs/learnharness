@@ -48,6 +48,7 @@ import { asAgentMessages } from "../core/native-messages.ts";
 import {
 	ChatInputError,
 	inputAppends,
+	withoutTrailingFailures,
 	parseChatInput,
 	type TurnInput,
 } from "../core/input-events.ts";
@@ -286,7 +287,9 @@ export async function handleChatInput(
 	// truth instead of the pre-answer record. (Wave C: the wake's markers
 	// ride this same write-ahead - the pump de-queued them at fire, so this
 	// is the ONLY copy ever appended.)
-	const merged = [...record.messages, ...appends];
+	// A retry runs from the record minus its failed tail (fork, 2026-10-24).
+	const base = input.type === "retry" ? withoutTrailingFailures(record.messages) : record.messages;
+	const merged = [...base, ...appends];
 	try {
 		stores.chatStore.saveMessages(chatId, merged);
 		// Dock fix (owner ruling 2026-09-26): persisted markers are visible

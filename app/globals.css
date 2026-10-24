@@ -598,3 +598,35 @@ body {
 	outline: 1px solid var(--border);
 	border-radius: 0.25rem;
 }
+
+/* ─── The C/C++ code editor (fork, 2026-10-24) — CodeMirror 6 with
+   @lezer/highlight's classHighlighter (tok-* classes), on the app's dark
+   palette. ─────────────────────────────────────────────────────────── */
+.lh-code-editor .cm-editor {
+	background: var(--card);
+	color: var(--foreground);
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	font-size: 13px;
+	min-height: 12rem;
+	max-height: 28rem;
+}
+.lh-code-editor .cm-editor.cm-focused { outline: none; border-color: var(--muted-foreground); }
+.lh-code-editor .cm-scroller { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); line-height: 1.55; }
+.lh-code-editor .cm-content { caret-color: var(--foreground); padding: 0.5rem 0; }
+.lh-code-editor .cm-cursor { border-left-color: var(--foreground); }
+.lh-code-editor .cm-gutters { background: transparent; color: var(--muted-foreground); border-right: 1px solid var(--border); }
+.lh-code-editor .cm-activeLine { background: color-mix(in oklab, var(--foreground) 5%, transparent); }
+.lh-code-editor .cm-activeLineGutter { background: transparent; color: var(--foreground); }
+.lh-code-editor .cm-selectionBackground,
+.lh-code-editor .cm-editor.cm-focused .cm-selectionBackground { background: color-mix(in oklab, #569cd6 35%, transparent) !important; }
+.lh-code-editor .cm-matchingBracket { background: color-mix(in oklab, var(--foreground) 15%, transparent); outline: 1px solid var(--muted-foreground); }
+.lh-code-editor .cm-placeholder { color: var(--muted-foreground); }
+.lh-code-editor .tok-keyword { color: #c586c0; }
+.lh-code-editor .tok-typeName { color: #4ec9b0; }
+.lh-code-editor .tok-string, .lh-code-editor .tok-string2 { color: #ce9178; }
+.lh-code-editor .tok-number, .lh-code-editor .tok-bool, .lh-code-editor .tok-atom { color: #b5cea8; }
+.lh-code-editor .tok-comment { color: #6a9955; font-style: italic; }
+.lh-code-editor .tok-variableName.tok-definition, .lh-code-editor .tok-propertyName.tok-definition { color: #9cdcfe; }
+.lh-code-editor .tok-macroName, .lh-code-editor .tok-meta { color: #d7ba7d; }
+.lh-code-editor .tok-operator, .lh-code-editor .tok-punctuation { color: #d4d4d4; }

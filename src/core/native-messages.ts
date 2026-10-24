@@ -509,6 +509,66 @@ function resultIdsFrom(messages: readonly AgentMessage[]): Set<string> {
  * Contract (pi-agent-core): never throws — an unknown shape passes
  * through untouched rather than killing the loop.
  */
+// ─── stale bulky reads (fork, 2026-10-24) ────────────────────────────────────
+// A fetched page or a read file is needed by the run that read it — the
+// tutor builds the plan or the answer from it right there. Carried
+// verbatim forever, it rides EVERY later request (the owner's live
+// session: three GitHub listings + a 45 KB JSON took the context from
+// 25k to 120k tokens). So once the learner has spoken again, a bulky read
+// from before that point is projected as a short stub: what was read,
+// how big, a preview, and "read it again if you need it". The record
+// keeps the full result; only the model-facing projection shrinks — and
+// it shrinks ONCE (stable afterwards, so the prompt cache re-warms).
+
+/** Tools whose results are bulky reads that go stale. */
+const STALE_READ_TOOLS: ReadonlySet<string> = new Set(["web_fetch", "read"]);
+/** A read result above this many characters is elided once stale. */
+export const STALE_READ_MAX_CHARS = 4_000;
+const STALE_READ_PREVIEW_CHARS = 600;
+
+/** Index of the newest LEARNER input: a user message, a practice
+ *  submission, or a question answer. -1 = none. */
+function lastLearnerInputIndex(messages: readonly AgentMessage[]): number {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i] as { role?: string; customType?: string; toolName?: string };
+		if (m.role === "user") return i;
+		if (m.role === "custom" && m.customType === "practice-thinking") return i;
+		if (m.role === "toolResult" && (QUESTION_TOOLS as readonly string[]).includes(m.toolName ?? "")) return i;
+	}
+	return -1;
+}
+
+/** The stub a stale bulky read is projected as (exported for tests). */
+export function staleReadStub(toolName: string, target: string | undefined, text: string): string {
+	const preview = text.slice(0, STALE_READ_PREVIEW_CHARS).trimEnd();
+	return (
+		`[${toolName} result elided from context — ${text.length.toLocaleString("en-US")} characters${target ? ` from ${target}` : ""}, ` +
+		`read earlier in this session and already used. Call ${toolName} again if you need the content.]\n\nPreview:\n${preview}…`
+	);
+}
+
+function elideStaleRead(m: Message, targets: ReadonlyMap<string, string>): Message {
+	const result = m as ToolResultMessage;
+	const text = result.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+	if (text.length <= STALE_READ_MAX_CHARS) return m;
+	return { ...result, content: [{ type: "text", text: staleReadStub(result.toolName, targets.get(result.toolCallId), text) }] } as Message;
+}
+
+/** toolCallId → the URL / path a read call targeted. */
+function readTargets(messages: readonly AgentMessage[]): Map<string, string> {
+	const out = new Map<string, string>();
+	for (const m of messages) {
+		if ((m as { role?: string }).role !== "assistant") continue;
+		for (const block of (m as AssistantMessage).content) {
+			if (block.type !== "toolCall" || !STALE_READ_TOOLS.has(block.name)) continue;
+			const args = block.arguments as { url?: unknown; path?: unknown };
+			const target = typeof args.url === "string" ? args.url : typeof args.path === "string" ? args.path : undefined;
+			if (target) out.set(block.id, target);
+		}
+	}
+	return out;
+}
+
 export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 	// THE COMPACTION CUT (owner round 14, 2026-10-05): the ACTIVE marker
 	// (the newest — chained compactions rule last) names the first kept
@@ -547,6 +607,8 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 	const out: Message[] = [];
 	if (leading) out.push(leading);
 	if (head) out.push(head);
+	const learnerInput = lastLearnerInputIndex(messages);
+	const targets = readTargets(messages);
 	for (let i = leading ? Math.max(start, 1) : start; i < messages.length; i++) {
 		const m = messages[i]!;
 		const role = (m as { role?: string }).role;
@@ -569,7 +631,10 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 		}
 		// Strip the record id: the wire carries the native shape only.
 		const { id: _id, ...native } = m as LhMessage;
-		out.push(native as Message);
+		// A bulky read from before the learner's latest input → its stub.
+		const stale =
+			role === "toolResult" && i < learnerInput && STALE_READ_TOOLS.has((m as ToolResultMessage).toolName);
+		out.push(stale ? elideStaleRead(native as Message, targets) : (native as Message));
 		// Dangling-call synthesis: an assistant message whose toolCalls have
 		// no results in the remaining tail (abort mid-question) — the
 		// provider rejects unanswered calls outright.

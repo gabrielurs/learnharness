@@ -55,7 +55,12 @@ export function useZeroKeys(): boolean {
 	useSettingsSaved((section) => {
 		if (section === "keys") read();
 	});
-	return zeroKeys;
+	// Keyless providers (fork, 2026-10-24 — the Claude Code bridge) unlock
+	// models without any key: the catalog's providers[] says so. Pending
+	// catalog → no verdict, same never-flash rule as the keys read.
+	const { catalog } = useModelCatalog();
+	if (!catalog) return false;
+	return zeroKeys && !catalog.providers.some((p) => p.keyPresent);
 }
 
 /** The pill itself — the models CTA's chrome and placement, the keys

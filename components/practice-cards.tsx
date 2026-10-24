@@ -60,11 +60,14 @@ export function ProblemCard({ part }: ArtifactPartProps) {
 	// statement — same container + eyebrow discipline as the answered card
 	// and the dock (which mirrors this in Slice D). The commitment never
 	// renders — only the call's statement.
-	const input = (part.input ?? {}) as { statement?: string };
+	const input = (part.input ?? {}) as { statement?: string; code?: { language?: string } };
 	const statement = typeof input.statement === "string" ? input.statement : "";
+	const language = input.code?.language === "c" ? "C" : input.code?.language === "cpp" ? "C++" : null;
 	return (
 		<div data-testid="problem-card" className="lh-card-enter my-1 rounded-xl border bg-card p-4">
-			<div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Problem</div>
+			<div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+				Problem{language ? ` · ${language} coding` : ""}
+			</div>
 			<div className="lh-prose text-[15px]">
 				<MessageResponse>{repairMathForDisplay(statement)}</MessageResponse>
 			</div>
@@ -289,10 +292,29 @@ function MetadataPopover({
 	);
 }
 
+/** Where a code submission starts inside a thinking text (fork,
+ *  2026-10-24 — contracts/code.ts renderCodeSubmission's header). */
+const CODE_SUBMISSION = /^Code \((?:C|C\+\+)\):\n`{3,}/m;
+
 export function ThinkingCard({ data }: { data: PracticeThinkingData }) {
 	// The unified row (owner rounds, 2026-10-05): one style, one label —
 	// 50%-italic quote block on expand. Legacy records' commit flag is
 	// deliberately unread (one lane now). A TRANSCRIPT row (owner round,
 	// 2026-10-07): full-width band + rail, arriving expanded.
-	return <ThinkingBlock testId="thinking-card" label="YOUR THINKING" text={data.text} defaultOpen />;
+	const at = data.text.search(CODE_SUBMISSION);
+	if (at === -1) return <ThinkingBlock testId="thinking-card" label="YOUR THINKING" text={data.text} defaultOpen />;
+	// A code submission: the trace (if any) as usual, then the code and its
+	// test results rendered as markdown (fenced code, the results list).
+	const trace = data.text.slice(0, at).trim();
+	return (
+		<>
+			{trace && <ThinkingBlock testId="thinking-card" label="YOUR THINKING" text={trace} defaultOpen />}
+			<div data-testid="code-submission-card" className="lh-card-enter my-1 rounded-xl border bg-card p-4">
+				<div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Your code</div>
+				<div className="lh-prose text-[14px]">
+					<MessageResponse>{data.text.slice(at)}</MessageResponse>
+				</div>
+			</div>
+		</>
+	);
 }

@@ -43,3 +43,5 @@ export * from "./compaction.ts";
 export { runPiTurn, piTurnResponse, type PiTurnHandle, type PiTurnSpec } from "./pi/ui-stream.ts";
 export * from "./observability.ts";
 export * from "./model-catalog.ts";
+// The local C/C++ runner behind POST /api/code/run (fork, 2026-10-24).
+export * from "./code-runner.ts";

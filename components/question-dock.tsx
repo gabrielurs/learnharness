@@ -12,6 +12,8 @@ import {
 	normalizeQuizType,
 	CONFIDENCE_STOPS,
 	DEFAULT_CONFIDENCE_INDEX,
+	confidenceStopIndex,
+	spokenConfidence,
 	emptyDockSelection,
 	normalizeOptions,
 	resolveCorrect,
@@ -327,6 +329,17 @@ function QuestionDockForm({
 	// deliberate (the same number, the same meaning). The dock unmounts
 	// between questions, so each question starts fresh at 50.
 	const [confIdx, setConfIdx] = useState<number>(DEFAULT_CONFIDENCE_INDEX);
+	/* The forgotten-confidence nudge (fork, 2026-10-24 — owner: "se me
+	 * olvida"; 11 of 23 live answers sat at the untouched 50). The first
+	 * submit with the slider never set highlights it and asks instead of
+	 * sending; a second submit sends — a deliberate 50 stays one keypress. */
+	const [confTouched, setConfTouched] = useState(false);
+	const [confNudge, setConfNudge] = useState(false);
+	const chooseConf = (idx: number) => {
+		setConfIdx(idx);
+		setConfTouched(true);
+		setConfNudge(false);
+	};
 	const selectMode: SelectMode = qd.mode === "multi-select" ? "multi-select" : "single-select";
 
 	// The PRIMARY dictation input (owner, STT round 1): while a question
@@ -349,8 +362,16 @@ function QuestionDockForm({
 					thinkingTextRef.current = v;
 					setThinking(v);
 				}
+				// Spoken confidence (fork, 2026-10-24): "estoy 70% seguro" in the
+				// dictated speech moves the slider; the words stay in the text.
+				const spoken = kind === "quiz" ? spokenConfidence(t) : null;
+				if (spoken !== null) {
+					setConfIdx(confidenceStopIndex(spoken));
+					setConfTouched(true);
+					setConfNudge(false);
+				}
 			},
-			[qd.mode],
+			[qd.mode, kind],
 		),
 		// Released while a teach check sits unrevealed (owner 2026-10-03):
 		// the reading-thinking field owns dictated speech during the reading.
@@ -366,6 +387,10 @@ function QuestionDockForm({
 
 	const submit = () => {
 		if (!canSubmit || compactionRunning) return;
+		if (kind === "quiz" && !sel.dontKnow && !confTouched && !confNudge) {
+			setConfNudge(true);
+			return;
+		}
 		/* FINISH DICTATION FIRST (owner, 2026-10-01): Enter may arrive while
 		 * a run is live with reasoning still in Deepgram's hands. Stop the
 		 * run, let the last finals land in the target field, and only then
@@ -511,6 +536,8 @@ function QuestionDockForm({
 				// (the slider grays out and nothing is sent).
 				if (kind !== "quiz" || sel.dontKnow) return;
 				e.preventDefault();
+				setConfTouched(true);
+				setConfNudge(false);
 				setConfIdx((i) =>
 					Math.min(
 						CONFIDENCE_STOPS.length - 1,
@@ -734,7 +761,16 @@ function QuestionDockForm({
 				GRAYS it out — the layout holds, no value is sent, the IDK
 				signal stands alone. */}
 			{kind === "quiz" && (
-				<div className="border-t border-border/60 px-4 py-2.5">
+				<div
+					className={cn("border-t border-border/60 px-4 py-2.5 transition-colors", confNudge && "bg-amber-500/10")}
+					data-testid="confidence-row"
+					data-nudge={confNudge || undefined}
+				>
+					{confNudge && (
+						<div className="mb-1.5 text-xs font-medium text-amber-500" data-testid="confidence-nudge" role="status">
+							How sure are you? Set it with ←/→ or drag — or press Enter again to send 50%.
+						</div>
+					)}
 					<div className="flex items-center gap-3">
 						<span
 							className={cn(
@@ -786,7 +822,7 @@ function QuestionDockForm({
 									for (let i = 1; i < CONFIDENCE_STOPS.length; i++) {
 										if (Math.abs(CONFIDENCE_STOPS[i]! - v) < Math.abs(CONFIDENCE_STOPS[best]! - v)) best = i;
 									}
-									setConfIdx(best);
+									chooseConf(best);
 								}}
 								style={{ color: CONFIDENCE_COLORS[confIdx] }}
 								className={cn(

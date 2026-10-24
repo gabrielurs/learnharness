@@ -42,6 +42,8 @@ const FETCH_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 /** Keep the researcher's context sane — long pages truncate with a marker. */
 const MAX_CONTENT_CHARS = 40_000;
+/** Below this, a Readability extraction is suspected to be a JS shell. */
+const THIN_CONTENT_CHARS = 1_500;
 const MIN_USEFUL_CONTENT = 200;
 
 const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
@@ -112,14 +114,30 @@ async function fetchAndExtract(url: string): Promise<string> {
 	if (!contentType.includes("html")) return `${sourceLine}\n\n${truncate(text)}`; // plain text / markdown / code
 
 	const extracted = htmlToMarkdown(text);
-	if (extracted) {
-		const header = extracted.title ? `# ${extracted.title}\n\n${sourceLine}\n\n---\n\n` : `${sourceLine}\n\n---\n\n`;
-		return header + truncate(extracted.content);
-	}
-	// Readability failed — likely JS-rendered. Try Jina Reader.
+	const local = extracted
+		? (extracted.title ? `# ${extracted.title}\n\n${sourceLine}\n\n---\n\n` : `${sourceLine}\n\n---\n\n`) + extracted.content
+		: null;
+	// A THIN extraction (fork, 2026-10-24) is usually a JS-rendered page whose
+	// shell Readability happily "succeeds" on (nav + footer only): try Jina
+	// Reader too and keep the richer of the two.
+	if (local && (extracted?.content.length ?? 0) >= THIN_CONTENT_CHARS) return truncate(local);
+	// Readability failed or came back thin — likely JS-rendered. Try Jina Reader.
 	const jina = await fetchViaJina(url);
-	if (jina) return truncate(jina);
+	const best = [local, jina].filter((t): t is string => !!t).sort((a, b) => b.length - a.length)[0];
+	if (best) return truncate(best);
 	throw new Error("Could not extract readable content (the page may be JavaScript-rendered)");
+}
+
+/** Loopback, private, link-local and local-name hosts (literal checks —
+ *  exported for tests). */
+export function isPrivateHost(hostname: string): boolean {
+	const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+	if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return true;
+	if (h === "::1" || h === "::" || h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return true;
+	const v4 = h.replace(/^::ffff:/, "").match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+	if (!v4) return false;
+	const [a, b] = [Number(v4[1]), Number(v4[2])];
+	return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
 }
 
 // ── tool registry ────────────────────────────────────────────────────────────
@@ -178,6 +196,13 @@ export function createWebTools(search: () => SearchProvider | null): Record<stri
 				} catch {
 					return `web_fetch failed: invalid URL "${url}"`;
 				}
+				// Public web only (fork, 2026-10-24 — web_fetch is now always on
+				// for the conversation agents): a fetched page could steer the
+				// agent toward the learner's own machine or LAN (this app's API
+				// included). Literal private/loopback hosts are refused.
+				if (isPrivateHost(new URL(url).hostname)) {
+					return `web_fetch refused: ${new URL(url).hostname} is a local or private-network address`;
+				}
 				try {
 					return await fetchAndExtract(url);
 				} catch (err) {
@@ -187,6 +212,13 @@ export function createWebTools(search: () => SearchProvider | null): Record<stri
 		},
 	};
 }
+
+/** web_fetch for the CONVERSATION agents (fork, 2026-10-24): reading a URL
+ *  the learner hands over needs no search engine, so prober, teacher and
+ *  practitioner carry it always — keyless. The page lands in the record
+ *  as the tool result (truncated at MAX_CONTENT_CHARS), so later turns
+ *  still have it. */
+export const webFetchTool: AgentTool<any> = createWebTools(() => null).web_fetch!;
 
 /** The provider-less backstop (tests pin the shape with it; the runner
  *  always injects the real seam — an absent seam reads as unavailable,

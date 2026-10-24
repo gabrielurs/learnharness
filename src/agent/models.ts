@@ -8,6 +8,7 @@ import {
 	type StreamFunction,
 } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { claudeCodeProvider } from "./claude-code/provider.ts";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type ModelRole } from "../../config.ts";
 import { DEFAULT_THINKING_ORDER } from "../core/settings.ts";
@@ -57,6 +58,9 @@ export function piModels() {
 	if (!collection) {
 		collection = createModels({ identity: APP_IDENTITY });
 		for (const provider of builtinProviders()) collection.setProvider(provider);
+		// The Claude Code bridge (2026-10-24): subscription-backed Claude via
+		// the local CLI — one more provider to everything downstream.
+		collection.setProvider(claudeCodeProvider());
 	}
 	return collection;
 }

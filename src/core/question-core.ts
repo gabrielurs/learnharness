@@ -500,6 +500,82 @@ export interface AnswerRequest {
 export const CONFIDENCE_STOPS: readonly number[] = [0, 30, 50, 70, 90, 100];
 export const DEFAULT_CONFIDENCE_INDEX = 2;
 
+// ─── spoken confidence (fork, 2026-10-24) ─────────────────────────────────────
+// The learner can SAY their confidence while dictating their thinking —
+// "estoy 70% seguro", "confianza 90", "ni idea", "I'm pretty sure" — and
+// the slider follows. The phrase stays in the text (owner: the tutor reads
+// how it was said). A bare number never counts: it needs a confidence
+// word beside it, so "el 50% de 20" in a math answer is left alone.
+
+const NUMBER_WORDS: Record<string, number> = {
+	cero: 0, diez: 10, veinte: 20, treinta: 30, cuarenta: 40, cincuenta: 50, sesenta: 60, setenta: 70, ochenta: 80, noventa: 90, cien: 100, ciento: 100,
+	zero: 0, ten: 10, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100,
+};
+const NUM = `(\\d{1,3}|${Object.keys(NUMBER_WORDS).join("|")})`;
+const PCT = `(?:\\s*(?:%|por\\s*ciento|por\\s*cien|percent|per\\s*cent))?`;
+const SURE = `(?:segur[oa]s?|confianza|confiado|confiada|convencid[oa]|sure|certain|confident|confidence)`;
+/** Numeric forms: "<n>% seguro", "seguro al <n>%", "confianza (de) <n>". */
+const NUMERIC_PATTERNS: RegExp[] = [
+	new RegExp(`${NUM}${PCT}\\s+(?:\\w+\\s+){0,2}?${SURE}`, "gi"),
+	new RegExp(`${SURE}\\s+(?:\\w+\\s+){0,3}?${NUM}${PCT}`, "gi"),
+];
+/** Worded forms → a probability; negatives listed before the plain
+ *  "seguro" so "no estoy seguro" never reads as sure. */
+/** End-of-word that understands accented letters (JS \b does not). */
+const END = "(?![\\wáéíóúüñ])";
+const phrase = (body: string) => new RegExp(`\\b(?:${body})${END}`, "gi");
+const PHRASES: [RegExp, number][] = [
+	[phrase("no\\s+tengo\\s+(?:ni\\s+)?idea|ni\\s+idea|no\\s+idea|no\\s+lo\\s+s[eé]|i\\s+have\\s+no\\s+idea|no\\s+clue"), 0],
+	[phrase("no\\s+estoy\\s+(?:muy\\s+|nada\\s+)?segur[oa]|no\\s+muy\\s+segur[oa]|dudo|tengo\\s+dudas|not\\s+(?:very\\s+|really\\s+)?sure|unsure"), 30],
+	[phrase("bastante\\s+segur[oa]|creo\\s+que\\s+s[ií]|pretty\\s+sure|fairly\\s+sure|quite\\s+sure"), 70],
+	[phrase("segur[ií]sim[oa]|totalmente\\s+segur[oa]|completamente\\s+segur[oa]|absolutamente\\s+segur[oa]|absolutely\\s+sure|completely\\s+sure|totally\\s+sure|definitely"), 100],
+	[phrase("muy\\s+segur[oa]|estoy\\s+segur[oa]|very\\s+sure|i'?m\\s+sure"), 90],
+];
+
+function numberValue(token: string): number | null {
+	const n = /^\d+$/.test(token) ? Number(token) : NUMBER_WORDS[token.toLowerCase()];
+	return n !== undefined && n >= 0 && n <= 100 ? n : null;
+}
+
+/** The confidence (0-100) the text SAYS, or null. When several phrases
+ *  occur, the LAST one wins — a learner who corrects themselves mid-
+ *  sentence means the correction. */
+export function spokenConfidence(text: string): number | null {
+	// Latest END wins; on an equal end the LONGER match wins ("no estoy
+	// seguro" over its own tail "estoy seguro").
+	let best: { at: number; start: number; value: number } | null = null;
+	const consider = (start: number, at: number, value: number) => {
+		const b = best as { at: number; start: number } | null;
+		if (!b || at > b.at || (at === b.at && start < b.start)) best = { at, start, value };
+	};
+	for (const pattern of NUMERIC_PATTERNS) {
+		for (const m of text.matchAll(pattern)) {
+			const value = numberValue(m[1]!);
+			if (value !== null) consider(m.index!, m.index! + m[0].length, value);
+		}
+	}
+	// A phrase that is the tail of a numeric match ("70% seguro" also reads
+	// "seguro") must not override it: phrases only win when they END later.
+	const numericEnd = (best as { at: number } | null)?.at ?? -1;
+	for (const [pattern, value] of PHRASES) {
+		for (const m of text.matchAll(pattern)) {
+			const end = m.index! + m[0].length;
+			if (end > numericEnd) consider(m.index!, end, value);
+		}
+	}
+	return (best as { value: number } | null)?.value ?? null;
+}
+
+/** The slider stop nearest a raw confidence; an exact tie snaps DOWN
+ *  (the cautious read — 80 → 70). */
+export function confidenceStopIndex(value: number): number {
+	let idx = 0;
+	for (let i = 1; i < CONFIDENCE_STOPS.length; i++) {
+		if (Math.abs(CONFIDENCE_STOPS[i]! - value) < Math.abs(CONFIDENCE_STOPS[idx]! - value)) idx = i;
+	}
+	return idx;
+}
+
 // ─── dock selection (the client state machine, pure for tests) ─────────────
 
 /** The question dock's selection state (0-based indices in display order). */

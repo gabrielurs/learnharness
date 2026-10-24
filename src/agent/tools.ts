@@ -23,6 +23,7 @@ import { readTool } from "./tools/read.ts";
 import { lsTool } from "./tools/ls.ts";
 import { findTool } from "./tools/find.ts";
 import { grepTool } from "./tools/grep.ts";
+import { webFetchTool } from "./tools/web.ts";
 import { healToolRecord } from "./tools/heal.ts";
 import type { GraphStore } from "../core/ports.ts";
 
@@ -327,6 +328,9 @@ export function createProberTools(
 				ls: lsTool,
 				find: findTool,
 				grep: grepTool,
+				// Keyless URL reading (fork, 2026-10-24): a page the learner
+				// hands over, read directly — no search engine needed.
+				web_fetch: webFetchTool,
 				// Job dispatch in the probe phase (owner ruling, 2026-09-20):
 				// research + pdf are ALWAYS available in every phase — the
 				// prober can verify facts or read learner PDFs while assessing.
@@ -461,6 +465,8 @@ export function createTeacherTools(
 			ls: lsTool,
 			find: findTool,
 			grep: grepTool,
+			// Keyless URL reading (fork, 2026-10-24) — see the prober's.
+			web_fetch: webFetchTool,
 			...planTools(ctx),
 			// Fix wave (2026-09-20): searchAvailable was RECEIVED here but
 			// DROPPED when building the inner JobToolContext — the drop-gate
