@@ -13,6 +13,7 @@
  * ready | submitted | streaming | error.
  */
 
+import { signalStudyActivity } from "@/components/study-activity";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import {
@@ -564,6 +565,9 @@ export class SessionModel {
 	 */
 	async send(input: ChatInput): Promise<void> {
 		if (!this.readyRef) return;
+		// The learner acted (not the app's own continuation nudges): the
+		// study timer starts a block if it is idle (fork, 2026-10-24).
+		if (input.type !== "continue") signalStudyActivity();
 		this.consumeAbort?.abort();
 		const controller = new AbortController();
 		this.consumeAbort = controller;
