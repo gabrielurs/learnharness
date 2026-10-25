@@ -19,6 +19,7 @@
 
 import { Type, type Static } from "typebox";
 import { stripModelValueDebris } from "./value-debris.ts";
+import { CODE_HOLE, codeExerciseProblems, type CodeExercise } from "./contracts/code.ts";
 
 // ─── shared types ───────────────────────────────────────────────────────────
 
@@ -230,7 +231,7 @@ export function normalizeQuizType(raw: unknown): QuizQuestionType | undefined {
  *  truth. Records that predate the `type` field carry none — they render
  *  as checks, the standing default. */
 export function questionNeedsReveal(tool: string, rawInput: unknown, phase: string): boolean {
-	if ((tool !== "quiz" && tool !== "explain") || phase !== "teach") return false;
+	if ((tool !== "quiz" && tool !== "explain" && tool !== "exercise") || phase !== "teach") return false;
 	return normalizeQuizType((rawInput as { type?: unknown } | null)?.type) !== "predict";
 }
 
@@ -356,6 +357,100 @@ export function explainInputProblems(input: { correctAnswer: string }): string[]
 	return [];
 }
 
+/** A coding exercise attached to a pose (fork, 2026-10-24; kinds
+ *  2026-10-25): the learner gets a C/C++ editor and runs it on their
+ *  machine. Shared by the practice `problem` and the teacher's
+ *  `exercise`. */
+export function codeExerciseObject(tool: string) {
+	return Type.Object(
+		{
+			language: Type.Union([Type.Literal("c"), Type.Literal("cpp")], { description: "REQUIRED — c or cpp (bare word)." }),
+			kind: Type.Optional(
+				Type.Union([Type.Literal("write"), Type.Literal("fix"), Type.Literal("predict"), Type.Literal("fill")], {
+					description:
+						"The exercise kind (bare word; omit = write). write — the learner writes the program. " +
+						"fix — starterCode is a program with a bug (syntax or logic) to repair until the tests pass. " +
+						"predict — starterCode is a complete program shown READ-ONLY; the learner writes its exact output on `stdin` and locks it before he may run the code; takes NO tests. " +
+						`fill — starterCode is the program with each gap written as ${CODE_HOLE}; only the gaps are editable.`,
+				}),
+			),
+			starterCode: Type.Optional(
+				Type.String({
+					description:
+						"What the editor opens with. write: includes, a main() skeleton, the signature to fill — never the solution. " +
+						`fix: the whole program, bug included. predict: the complete program to read. fill: the whole program with every gap as ${CODE_HOLE}. ` +
+						"REQUIRED for fix, predict and fill.",
+				}),
+			),
+			tests: Type.Optional(
+				Type.Array(
+					Type.Object({
+						stdin: Type.String({ description: "The program's standard input (\"\" when it reads none)." }),
+						expected: Type.String({ description: "The EXACT standard output a correct program prints (trailing whitespace is ignored)." }),
+						hidden: Type.Optional(Type.Boolean({ description: "true = runs on submit only, data never shown to the learner (edge cases)." })),
+					}),
+					{ minItems: 1, description: "write/fix/fill: REQUIRED — stdin → expected stdout cases. Data only: they never execute as code. predict: OMIT." },
+				),
+			),
+			stdin: Type.Optional(Type.String({ description: "predict only: the program's standard input (omit when it reads none)." })),
+		},
+		{ description: `A CODING ${tool}: the learner works on C/C++ in an editor and runs it on their own machine — against these tests, or, for predict, after locking a prediction.` },
+	);
+}
+
+// ─── exercise: the teacher's coding question (owner, 2026-10-25) ────────────
+
+/** The teacher's coding exercise: a graded question whose answer is code
+ *  (or, for predict, a locked prediction) — always armed in teaching,
+ *  whatever the quizzing mechanic. Graded by the MODEL against the
+ *  committed modelSolution, exactly like explain; the role and plan
+ *  position fields lead, as on both teach quizzing tools. */
+export const exerciseInputBase = Type.Object({
+	question: Type.String({
+		description:
+			"The exercise as the learner reads it (markdown + LaTeX): what to do, self-contained. ONE exercise per turn: pose it, then end your turn — the submission determines the next.",
+	}),
+	code: codeExerciseObject("exercise"),
+	modelSolution: Type.String({
+		description:
+			"REQUIRED — COMMITTED before the learner ever sees the exercise: the full reference program (write/fix/fill), " +
+			"or for predict the EXACT output followed by the trace that produces it. Grade the submission strictly against it — " +
+			"never revise it after seeing his work. It is shown to him once he submits; your next reply grades the work.",
+	}),
+	details: Type.Optional(Type.String({ description: "Optional extra context or instructions shown under the exercise." })),
+});
+
+export const exerciseInputObject = Type.Object({
+	type: predictCheckType,
+	nodeId: Type.String({
+		description:
+			"REQUIRED plan-tree node id this exercise is about — must EXACTLY match one of this session's " +
+			"plan_init node slugs (validated at call time; a mismatched id is rejected back to you). " +
+			"It moves the lesson's position on the map exactly like a quiz or explain tagged with the same node.",
+	}),
+	...exerciseInputBase.properties,
+});
+
+/** The DISPLAY parse for persisted exercise calls: the base + a lenient
+ *  optional `type` (the quiz/explain display pattern); nodeId stripped. */
+export const exerciseDisplayInputSchema = Type.Object({
+	...exerciseInputBase.properties,
+	type: Type.Optional(Type.String()),
+});
+
+export type ExerciseToolInput = Static<typeof exerciseInputObject>;
+
+/** The exercise authoring contract: the commitment exists and the code
+ *  exercise is well-formed for its kind. Empty = postable. */
+export function exerciseInputProblems(input: { modelSolution: string; code: unknown }): string[] {
+	const problems: string[] = [];
+	if (typeof input.modelSolution !== "string" || input.modelSolution.trim().length === 0) {
+		problems.push("modelSolution is required — commit to the full reference (program, or exact output + trace for predict) BEFORE posing the exercise.");
+	}
+	problems.push(...codeExerciseProblems(input.code as CodeExercise));
+	return problems;
+}
+
 /** The tool names that carry the quizzing mechanic — the teach seam
  *  (phases), the plan-position fold, and the pending gate all recognize
  *  whichever is armed. */
@@ -404,7 +499,7 @@ export interface OptionAnswer {
 	index: number; // 1-based display index
 }
 
-export type QuestionKind = "quiz" | "ask" | "explain";
+export type QuestionKind = "quiz" | "ask" | "explain" | "exercise";
 export type SelectMode = "single-select" | "multi-select";
 export type QuestionMode = SelectMode | "text";
 
@@ -803,9 +898,10 @@ export function buildAnswer(qd: QuestionData, req: AnswerRequest, tool?: string)
 			base.confidence = Math.max(0, Math.min(100, Math.round(req.confidence)));
 		}
 	}
-	if (qd.kind === "explain") {
+	if (qd.kind === "explain" || qd.kind === "exercise") {
 		// No client grading — the model grades in its reply, against the
-		// commitment. The commitment snapshots for the reveal + rendering.
+		// commitment. The commitment snapshots for the reveal + rendering
+		// (an exercise's modelSolution rides the same field).
 		base.committed = qd.committedAnswer;
 	}
 	return base;

@@ -4,11 +4,11 @@ import { useCallback, useRef, useState } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Button } from "@/components/ui/button";
-import { joinDictation, useDictationTarget } from "@/components/dictation";
+import { finishDictation, isDictationActive, joinDictation, useDictationTarget } from "@/components/dictation";
 import { useEnterSubmits } from "@/components/enter-submits";
 import { CodeExercisePanel } from "@/components/code-exercise";
 import { cn } from "@/lib/utils";
-import { renderCodeSubmission, repairMathForDisplay, type CodeExercise, type CodeRunResult } from "@/src/core";
+import { renderExerciseSubmission, repairMathForDisplay, type CodeExercise, type CodeSubmission } from "@/src/core";
 
 /**
  * The practice dock (practice sessions, owner design 2026-10-04): an
@@ -69,8 +69,18 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 		true,
 	);
 
+	/* FINISH DICTATION FIRST (the question dock's law): a submit may arrive
+	 * while a run is live — stop it, let its last finals land in the field
+	 * (the ref mirror), then read. Spoken reasoning is never cut off. */
 	const submit = () => {
 		if (compactionRunning) return;
+		if (isDictationActive()) {
+			void finishDictation().then(sendThinking);
+			return;
+		}
+		sendThinking();
+	};
+	const sendThinking = () => {
 		const text = thinkingRef.current.trim();
 		if (text.length === 0) return;
 		thinkingRef.current = "";
@@ -87,18 +97,20 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 	/* A CODING problem (fork, 2026-10-24): Submit code runs every test and
 	 * sends the code + results — with any thinking typed so far — as ONE
 	 * submission on the same lane. */
-	const submitCode = (source: string, result: CodeRunResult) => {
+	const submitCode = async (submission: CodeSubmission) => {
 		if (compactionRunning || !input.code) return;
+		if (isDictationActive()) await finishDictation();
 		const trace = thinkingRef.current.trim();
 		thinkingRef.current = "";
 		setThinking("");
-		const code = renderCodeSubmission(input.code.language, source, result);
+		const code = renderExerciseSubmission(input.code, submission);
 		onSubmit(trace ? `${trace}\n\n${code}` : code);
 	};
 
-	/* ── the collapsed bar ── */
-	if (!expanded) {
-		return (
+	/* ── the collapsed bar ── the expanded form stays MOUNTED while
+	 * collapsed (hidden, the question dock's pattern): a code panel's run
+	 * results and its editor's undo history survive scrolling. */
+	const bar = (
 			<button
 				type="button"
 				data-testid="practice-dock-bar"
@@ -109,40 +121,53 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 				<span className="font-medium">Problem</span>
 				<span className="min-w-0 flex-1 truncate">{input.statement}</span>
 			</button>
-		);
-	}
+	);
 
 	/* ── the expanded form ── */
 	return (
-		<div data-testid="practice-dock" data-problem={problemCallId}>
-			{/* The agent's half: the 'Problem' eyebrow (mirroring the quiz
-			    cards' label row — owner round, 2026-10-05) + the statement,
-			    markdown + LaTeX rendered, capped by the measured column
-			    (--dock-max-h; the old fixed 40vh cut long problems short). */}
-			<div className="max-h-[var(--dock-max-h,40vh)] overflow-y-auto px-4 pt-3 pb-2">
-				<div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Problem</div>
-				<div className="lh-prose text-[15px]">
-					<MessageResponse>{typeof input.statement === "string" ? repairMathForDisplay(input.statement) : input.statement}</MessageResponse>
+		<>
+		{!expanded && bar}
+		{/* The WHOLE dock is capped by the measured column (--dock-max-h —
+		    owner round, 2026-10-05; whole-dock since 2026-10-25): a coding
+		    problem's editor and results stacked under a capped statement
+		    pushed the dock past the column, its top under the chat's top bar.
+		    Statement + code scroll together; the thinking field (Submit)
+		    stays pinned below. */}
+		<div
+			data-testid="practice-dock"
+			data-problem={problemCallId}
+			className={expanded ? "flex max-h-[var(--dock-max-h,40vh)] flex-col" : "invisible h-0 overflow-hidden"}
+			aria-hidden={!expanded || undefined}
+		>
+			<div className="min-h-0 flex-1 overflow-y-auto" data-testid="practice-dock-scroll">
+				{/* The agent's half: the 'Problem' eyebrow (mirroring the quiz
+				    cards' label row — owner round, 2026-10-05) + the statement,
+				    markdown + LaTeX rendered. */}
+				<div className="px-4 pt-3 pb-2">
+					<div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Problem</div>
+					<div className="lh-prose text-[15px]">
+						<MessageResponse>{typeof input.statement === "string" ? repairMathForDisplay(input.statement) : input.statement}</MessageResponse>
+					</div>
 				</div>
-			</div>
 
-			{input.code && (
-				<div className="px-4 pb-2" data-testid="practice-code">
-					<CodeExercisePanel
-						exercise={input.code}
-						draftKey={problemCallId}
-						onSubmit={submitCode}
-						submitLabel="Submit code"
-						disabled={compactionRunning}
-					/>
-				</div>
-			)}
+				{input.code && (
+					<div className="px-4 pb-2" data-testid="practice-code">
+						<CodeExercisePanel
+							exercise={input.code}
+							draftKey={problemCallId}
+							onSubmit={submitCode}
+							submitLabel="Submit code"
+							disabled={compactionRunning}
+						/>
+					</div>
+				)}
+			</div>
 
 			{/* The learner's half: Enter SENDS (owner round 2, 2026-10-05);
 			    Shift+Enter makes a newline — less to decide about. */}
 			<div
 				data-testid="practice-thinking-field"
-				className="m-1.5 rounded-[10px] border border-border/70 bg-background/60 transition-colors focus-within:border-primary/50"
+				className="m-1.5 shrink-0 rounded-[10px] border border-border/70 bg-background/60 transition-colors focus-within:border-primary/50"
 			>
 				<div className="px-2.5 pt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
 					YOUR THINKING
@@ -195,5 +220,6 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 				</div>
 			</div>
 		</div>
+		</>
 	);
 }

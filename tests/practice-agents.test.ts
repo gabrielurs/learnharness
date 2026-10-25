@@ -336,8 +336,11 @@ describe("practice prompt composition (own directory + the formatting appendix)"
 		// …and nothing from the teaching system prompt or shared fragments.
 		assert.doesNotMatch(prompt, /install understanding/);
 		// The shared 20-question-tools doctrine (predict/check) must not
-		// compose — practice has its own demand theory.
-		assert.doesNotMatch(prompt, /predict/i);
+		// compose — practice has its own demand theory. Keyed on the chunk's
+		// own headings: "predict" alone is now a coding-exercise kind
+		// practice legitimately names (owner, 2026-10-25).
+		assert.doesNotMatch(prompt, /## The question tools/);
+		assert.doesNotMatch(prompt, /Building graded questions/);
 	});
 
 	it("the SHARED voice + accuracy compose (owner round 13): ONE law across every agent, and the stale line is dead", () => {

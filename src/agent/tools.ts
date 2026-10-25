@@ -11,6 +11,8 @@ import {
 	probeQuizInputSchema,
 	quizInputObject,
 	quizInputProblems,
+	exerciseInputObject,
+	exerciseInputProblems,
 } from "../core/question-core.ts";
 import { filterEnabledTools, type EnabledTools } from "../core/pending.ts";
 import type { JobRecord } from "../core/contracts.ts";
@@ -394,6 +396,63 @@ export function teachQuizToolFor(ctx: Pick<PlanToolContext, "chatId" | "chatStor
 	};
 }
 
+/** The exercise example (owner, 2026-10-25): a compact predict — the
+ *  kind with the most escaping (a C string literal inside JSON) —
+ *  serialized by JSON.stringify, so the escaping shown is correct by
+ *  construction. Exported for the description pins. */
+export const exerciseExampleBody = {
+	type: "check" as const,
+	nodeId: "integer-division",
+	question: "What does this program print?",
+	code: {
+		language: "c" as const,
+		kind: "predict" as const,
+		starterCode: '#include <stdio.h>\nint main(void) {\n    int a = 7, b = 2;\n    printf("%d %d\\n", a / b, a % b);\n    return 0;\n}\n',
+	},
+	modelSolution: "3 1\n\nInteger division truncates: 7 / 2 = 3, and the remainder 7 % 2 = 1.",
+};
+
+/** The exercise mechanics (owner, 2026-10-25) — mechanics only; when and
+ *  how to use it is prompt doctrine (teacher/35-exercises.md). */
+function exerciseDescription(): string {
+	return (
+		"Pose a graded CODING exercise in C or C++: the learner works in an editor and runs the code on his own machine. " +
+		"Four kinds (`code.kind`): write (he writes the program; tests grade it), fix (starterCode carries a bug to repair until the tests pass), " +
+		"fill (starterCode marks gaps as /*__*/ and only the gaps are editable), predict (starterCode is shown read-only; he locks a prediction " +
+		"of its exact output on `code.stdin`, and only then may run it; no tests). Tests are stdin → expected stdout DATA, never executed as code; " +
+		"hidden tests run on submit only. His submission returns as the answer text: the code with the compile result and every test's verdict " +
+		"(hidden ones included, for you), or for predict the locked prediction plus the actual output if he ran it. " +
+		"THE COMMITMENT RULE: modelSolution is COMMITTED before he sees the exercise — the full reference program, or for predict the exact " +
+		"output followed by the trace that produces it; grade his work strictly against it, never revise it afterwards. He sees it on submit. " +
+		"Set `nodeId` (required) to the plan node the exercise is about — validated at call time against the session's plan map. " +
+		"ONE exercise per turn: call a single exercise, then end your turn — his submission determines the next." +
+		"\nExample arguments — copy the escaping exactly: inside JSON strings a newline is \\n and a C string's own \\n is \\\\n.\n```json\n" +
+		JSON.stringify(exerciseExampleBody, null, 2) +
+		"\n``` The example's nodeId is illustrative — copy an exact id from this session's plan_init."
+	);
+}
+
+/** The teacher's coding exercise (owner, 2026-10-25): always armed in
+ *  teaching, whatever the quizzing mechanic — nodeId-validated like the
+ *  teach quiz and explain; the code exercise is validated for its kind. */
+export function teachExerciseToolFor(ctx: Pick<PlanToolContext, "chatId" | "chatStore">): AgentTool<typeof exerciseInputObject> {
+	return {
+		name: "exercise",
+		label: "exercise",
+		description: exerciseDescription(),
+		parameters: exerciseInputObject,
+		prepareArguments: prepareQuestionArguments,
+		executionMode: "sequential",
+		execute: async (_toolCallId, input) => {
+			const problems = [...exerciseInputProblems(input)];
+			const nodeIdProblemText = nodeIdProblem(ctx, input.nodeId);
+			if (nodeIdProblemText) problems.push(nodeIdProblemText);
+			if (problems.length > 0) return invalidInputResult("exercise", problems);
+			return questionResult();
+		},
+	};
+}
+
 export interface TeacherToolContext extends PlanToolContext {
 	/** Job-tool wiring (sub-agent dispatch): the job store + the runner's
 	 *  spawn seam. The composition root injects both. */
@@ -452,6 +511,9 @@ export function createTeacherTools(
 		filterEnabledTools(
 			{
 			...quizzing,
+			// The coding exercise (owner, 2026-10-25): always armed in
+			// teaching, beside whichever quizzing tool the settings chose.
+			exercise: teachExerciseToolFor(ctx),
 			ask_user_question: askUserQuestionTool,
 			// The learner-filesystem set is always-on (user-decided 2026-09,
 			// sources v1): the teacher locates and reads learner-referenced

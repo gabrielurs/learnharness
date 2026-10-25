@@ -45,4 +45,6 @@ export * from "./observability.ts";
 export * from "./model-catalog.ts";
 // The local C/C++ runner behind POST /api/code/run (fork, 2026-10-24).
 export * from "./code-runner.ts";
+// clangd behind the editor (completions + diagnostics, owner 2026-10-25).
+export { clangdComplete, clangdDiagnostics } from "./clangd.ts";
 export { sessionCost } from "./pricing.ts";

@@ -2063,11 +2063,27 @@ function DockOverlay({
 		if (!el) return;
 		const measure = () => {
 			setSbInset(Math.round((el.offsetWidth - el.clientWidth) / 2));
-			setDockMaxH(Math.max(el.clientHeight - 32, 160));
+			// The cap is the column minus everything ELSE in the overlay
+			// block: the stats row, its padding, any cue above the shell
+			// (2026-10-25: the cap plus the stats row overflowed the column,
+			// the dock's top under the top bar). The shell's own height is
+			// excluded, so the dock growing never moves the cap.
+			const block = blockRef.current;
+			const shell = shellRef.current;
+			const others = block && shell ? block.offsetHeight - shell.offsetHeight : 0;
+			setDockMaxH(Math.max(el.clientHeight - 32 - others, 160));
 		};
 		measure();
 		window.addEventListener("resize", measure);
-		return () => window.removeEventListener("resize", measure);
+		// The stats row can wrap and cues come and go: re-measure on the
+		// block's own size changes too.
+		const block = blockRef.current;
+		const ro = block && typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+		if (ro && block) ro.observe(block);
+		return () => {
+			window.removeEventListener("resize", measure);
+			ro?.disconnect();
+		};
 	}, [scrollRef]);
 
 	// GROWTH MUTE (owner round, 2026-10-05 — the generation churn): during a
@@ -2348,7 +2364,7 @@ function DockOverlay({
 					>
 							{pending ? (
 								<QuestionDock
-									toolName={pending.tool as "quiz" | "probe" | "ask_user_question" | "explain" | "recall"}
+									toolName={pending.tool as "quiz" | "probe" | "ask_user_question" | "explain" | "recall" | "exercise"}
 									toolCallId={pending.toolCallId}
 									input={pending.input as never}
 									expanded={expanded}

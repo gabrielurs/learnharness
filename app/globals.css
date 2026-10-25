@@ -629,4 +629,16 @@ body {
 .lh-code-editor .tok-comment { color: #6a9955; font-style: italic; }
 .lh-code-editor .tok-variableName.tok-definition, .lh-code-editor .tok-propertyName.tok-definition { color: #9cdcfe; }
 .lh-code-editor .tok-macroName, .lh-code-editor .tok-meta { color: #d7ba7d; }
+/* clangd assistance (components/code-assist.ts): the completion list and
+   the diagnostics tooltip in the app's own palette, both themes. */
+.lh-code-editor .cm-tooltip { background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.25); }
+.lh-code-editor .cm-tooltip-autocomplete > ul { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; max-height: 14em; }
+.lh-code-editor .cm-tooltip-autocomplete > ul > li[aria-selected] { background: color-mix(in oklab, #569cd6 35%, transparent); color: var(--foreground); }
+.lh-code-editor .cm-completionDetail { color: var(--muted-foreground); font-style: normal; margin-left: 0.75em; }
+.lh-code-editor .cm-completionMatchedText { text-decoration: none; font-weight: 600; }
+.lh-code-editor .cm-diagnostic { padding: 4px 8px; font-size: 12px; }
+/* Fill-the-gaps exercises (components/code-holes.ts): the only editable
+   ranges — a filled gap is tinted, an empty one is a dashed box. */
+.lh-code-editor .lh-code-hole { background: color-mix(in oklab, #569cd6 22%, transparent); border-radius: 2px; outline: 1px dashed color-mix(in oklab, #569cd6 70%, transparent); }
+.lh-code-editor .lh-code-hole-empty { display: inline-block; min-width: 2.5ch; height: 1.1em; vertical-align: text-bottom; border: 1px dashed color-mix(in oklab, #569cd6 70%, transparent); border-radius: 2px; background: color-mix(in oklab, #569cd6 12%, transparent); }
 .lh-code-editor .tok-operator, .lh-code-editor .tok-punctuation { color: #d4d4d4; }

@@ -31,6 +31,9 @@ export function AnsweredCard({ answer, input }: { answer: QuestionAnswerData; in
 
 	const isQuiz = answer.kind === "quiz";
 	const isExplain = answer.kind === "explain";
+	// The teacher's coding exercise (owner, 2026-10-25): the answer text is
+	// the submission markdown (code + run, or prediction + run).
+	const isExercise = answer.kind === "exercise";
 	const selectedIdx = new Set(answer.answers.map((a) => a.index));
 	const correctIdx = new Set(answer.correctIndices ?? []);
 	// The question's own context rides the ORIGINAL CALL, not the answer
@@ -75,6 +78,8 @@ export function AnsweredCard({ answer, input }: { answer: QuestionAnswerData; in
 									: "Check"
 									: isExplain
 										? "Explain"
+										: isExercise
+											? "Exercise"
 											: "Question"}
 				{isQuiz &&
 					(answer.dontKnow ? (
@@ -158,7 +163,15 @@ export function AnsweredCard({ answer, input }: { answer: QuestionAnswerData; in
 				</div>
 			)}
 
-			{answer.text && <div className="lh-prose mt-2 whitespace-pre-wrap">“{answer.text}”</div>}
+			{answer.text && !isExercise && <div className="lh-prose mt-2 whitespace-pre-wrap">“{answer.text}”</div>}
+			{answer.text && isExercise && (
+				<div className="mt-2" data-testid="exercise-submission">
+					<div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Your code</div>
+					<div className="lh-prose text-[14px]">
+						<MessageResponse>{answer.text}</MessageResponse>
+					</div>
+				</div>
+			)}
 
 			{/* The confidence record (owner round 6): the slider's rail, disc
 			    removed — the missing handle itself says "this is a record, not a
@@ -222,6 +235,14 @@ export function AnsweredCard({ answer, input }: { answer: QuestionAnswerData; in
 			{/* The explain reveal (owner ruling 2026-09-27): the committed answer
 			    — one field, reasoning included — shown on submit; no verdict,
 			    the model's next reply IS the grading. */}
+			{isExercise && answer.committed && (
+				<div className="mt-3 rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground" data-testid="exercise-solution">
+					<div className="mb-1 font-medium text-foreground">Model solution</div>
+					<div className="lh-prose">
+						<MessageResponse>{answer.committed}</MessageResponse>
+					</div>
+				</div>
+			)}
 			{isExplain && answer.committed && (
 				<div className="mt-3 rounded-lg bg-muted py-2 text-sm text-muted-foreground">
 					<span className="font-medium text-foreground">The answer: </span>

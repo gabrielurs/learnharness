@@ -23,11 +23,13 @@ import {
 	parseAskInput,
 	parseQuizInput,
 	parseExplainInput,
+	parseExerciseInput,
 	toggleOption,
 	toggleOther,
 	type AnswerRequest,
 	type AskToolInput,
 	type DockSelection,
+	type ExerciseToolInput,
 	type ExplainToolInput,
 	type QuestionAnswerData,
 	type QuestionData,
@@ -37,6 +39,7 @@ import {
 	type Phase3,
 } from "@/src/core";
 import { CONFIDENCE_COLORS, confidenceRailStyle } from "@/components/confidence-rail";
+import { ExerciseDockForm } from "@/components/exercise-dock";
 
 /**
  * The question dock — a pending quiz/ask REPLACES the chat composer: the
@@ -59,9 +62,9 @@ import { CONFIDENCE_COLORS, confidenceRailStyle } from "@/components/confidence-
  */
 
 export interface QuestionDockProps {
-	toolName: "quiz" | "probe" | "ask_user_question" | "explain" | "recall";
+	toolName: "quiz" | "probe" | "ask_user_question" | "explain" | "recall" | "exercise";
 	toolCallId: string;
-	input: QuizToolInput | AskToolInput | ExplainToolInput;
+	input: QuizToolInput | AskToolInput | ExplainToolInput | ExerciseToolInput;
 	/** Collapse state, owned by the DockOverlay (it drives the shell's height morph). */
 	expanded: boolean;
 	/**
@@ -124,7 +127,13 @@ export function QuestionDock({
 	// anything that slips through renders the quiet fallback, never a
 	// crash on `.map` over model-authored bytes.
 	const parsed =
-		canonical === "quiz" ? parseQuizInput(input) : canonical === "explain" ? parseExplainInput(input) : parseAskInput(input);
+		canonical === "quiz"
+			? parseQuizInput(input)
+			: canonical === "explain"
+				? parseExplainInput(input)
+				: canonical === "exercise"
+					? parseExerciseInput(input)
+					: parseAskInput(input);
 	if (!parsed) {
 		return (
 			<div data-testid="malformed-question" className="rounded-xl border border-dashed bg-card/60 p-3 text-sm text-muted-foreground">
@@ -150,6 +159,16 @@ export function QuestionDock({
 				/>
 			)}
 			<div className={expanded ? "dock-variant" : "invisible h-0 overflow-hidden"}>
+				{canonical === "exercise" ? (
+					<ExerciseDockForm
+						toolCallId={toolCallId}
+						input={parsed as ExerciseToolInput}
+						onSubmit={onSubmit}
+						onEscape={onEscape}
+						dictationClaim={dictationClaim}
+						compactionRunning={compactionRunning}
+					/>
+				) : (
 				<QuestionDockForm
 					toolName={toolName}
 					toolCallId={toolCallId}
@@ -161,6 +180,7 @@ export function QuestionDock({
 					dictationClaim={dictationClaim}
 					compactionRunning={compactionRunning}
 				/>
+				)}
 			</div>
 		</>
 	);
@@ -191,7 +211,7 @@ export function QuestionDockBar({
 	label,
 	toolLabel,
 }: {
-	toolName: "quiz" | "ask_user_question" | "explain";
+	toolName: "quiz" | "ask_user_question" | "explain" | "exercise";
 	question: string;
 	onExpand: () => void;
 	variant?: "collapsed" | "reveal";
@@ -234,7 +254,7 @@ export function QuestionDockBar({
 			<span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">
 				{label ??
 							toolLabel ??
-							(toolName === "quiz" ? "Check" : toolName === "explain" ? "Explain" : "Question")}
+							(toolName === "quiz" ? "Check" : toolName === "explain" ? "Explain" : toolName === "exercise" ? "Exercise" : "Question")}
 			</span>
 			<span className="min-w-0 flex-1 truncate text-muted-foreground">{teaserText(question)}</span>
 			<span className="flex shrink-0 items-center gap-1 text-xs font-medium">

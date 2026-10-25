@@ -115,6 +115,18 @@ function toolResultBody(result: ToolResultMessage, ctx?: MarkdownContext): { hea
 		return { heading, body };
 	}
 
+	// The teacher's coding exercise (owner, 2026-10-25): the submission IS
+	// the answer text (code + run, or the locked prediction + run).
+	if (result.toolName === "exercise") {
+		const question = typeof out?.questionText === "string" && out.questionText ? out.questionText : "(no exercise text)";
+		const body = [`**Exercise:** ${question}`];
+		if (out?.dismissed === true) body.push("The learner skipped this exercise.");
+		else if (typeof out?.text === "string" && out.text.trim()) body.push(`The learner's submission:\n\n${out.text.trim()}`);
+		const thinking = (out as { thinking?: unknown } | undefined)?.thinking ?? out?.note;
+		if (typeof thinking === "string" && thinking) body.push(`*(his thinking: ${thinking})*`);
+		return { heading: "Exercise", body };
+	}
+
 	if (ctx !== undefined && result.toolName === PRACTICE_PROBLEM_TOOL) {
 		const statement = ctx.calls.get(result.toolCallId)?.args?.statement;
 		return {

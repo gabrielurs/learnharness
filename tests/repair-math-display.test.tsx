@@ -195,7 +195,11 @@ describe("practice display surfaces", () => {
 	});
 
 	it("does not change the collapsed preview, dismissal or global prose renderer", () => {
-		const preview = renderToStaticMarkup(dock({ statement: doubled }, false));
+		// The collapsed BAR stays the plain-text excerpt. (The expanded form
+		// stays mounted, hidden, beside it since 2026-10-25 — so the bar is
+		// read on its own.)
+		const collapsed = renderToStaticMarkup(dock({ statement: doubled }, false));
+		const preview = parseHTML(collapsed).document.querySelector('[data-testid="practice-dock-bar"]')!.outerHTML;
 		assert.ok(preview.includes(doubled));
 		assert.deepEqual(math(preview).annotations, []);
 		const dismissed = renderToStaticMarkup(<ConcludeCard part={part({ outcome: "dismissed", verdict: doubled }, { reveal: doubled })} />);

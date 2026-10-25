@@ -181,7 +181,7 @@ export function phaseAt3Lh(messages: readonly LhMessage[], upToIndex?: number): 
 				for (const block of content) {
 					if (
 						block.type === "toolCall" &&
-						(block.name === "quiz" || block.name === "explain") &&
+						(block.name === "quiz" || block.name === "explain" || block.name === "exercise") &&
 						taggedNodeId(block.arguments)
 					) {
 						phase = "teach";

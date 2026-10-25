@@ -29,6 +29,7 @@ import type { LhMessage } from "../../core/native-messages.ts";
 import { concludeResult, invalidInputResult, problemResult } from "../tool-execute.ts";
 import { healEncodedArguments, healToolRecord } from "./heal.ts";
 import { codeExerciseProblems, type CodeExercise } from "../../core/contracts/code.ts";
+import { codeExerciseObject } from "../../core/question-core.ts";
 
 
 /** The record-reading context the gates need (the plan-tools idiom). */
@@ -69,28 +70,9 @@ export function createPracticeGate(ctx: PracticeToolContext): PracticeGate {
 	return { problemActive: record ? activeProblemOf(record.messages) !== null : false };
 }
 
-/** A coding exercise attached to a pose (fork, 2026-10-24): the learner
- *  gets a C/C++ editor and the tests run on their machine. Shared by the
- *  practice `problem` and the teacher's coding question. */
-export function codeExerciseObject(tool: string) {
-	return Type.Object(
-		{
-			language: Type.Union([Type.Literal("c"), Type.Literal("cpp")], { description: "REQUIRED — c or cpp (bare word)." }),
-			starterCode: Type.Optional(
-				Type.String({ description: "What the editor opens with: includes, a main() skeleton, the function signature to fill. Never the solution." }),
-			),
-			tests: Type.Array(
-				Type.Object({
-					stdin: Type.String({ description: "The program's standard input (\"\" when it reads none)." }),
-					expected: Type.String({ description: "The EXACT standard output a correct program prints (trailing whitespace is ignored)." }),
-					hidden: Type.Optional(Type.Boolean({ description: "true = runs on submit only, data never shown to the learner (edge cases)." })),
-				}),
-				{ minItems: 1, description: "REQUIRED — stdin → expected stdout cases. Data only: they never execute as code." },
-			),
-		},
-		{ description: `A CODING ${tool}: the learner writes C/C++ in an editor and runs it against these tests on their own machine.` },
-	);
-}
+/** The coding-exercise schema lives in the core (question-core) — the
+ *  practice `problem` and the teacher's `exercise` share it. */
+export { codeExerciseObject };
 
 // ─── problem: the pose ───────────────────────────────────────────────────────
 
@@ -113,7 +95,9 @@ export const problemInputObject = Type.Object({
 		}),
 	),
 	modelSolution: Type.String({
-		description: "REQUIRED — the full solution, moves in order, committed BEFORE the learner sees the problem. This IS the reveal — conclude shows it verbatim; never re-author it.",
+		description:
+			"REQUIRED — the full solution, moves in order, committed BEFORE the learner sees the problem. This IS the reveal — conclude shows it verbatim; never re-author it. " +
+			"A coding problem: the full reference program (write/fix/fill), or for predict the EXACT output followed by the trace that produces it.",
 	}),
 	code: Type.Optional(codeExerciseObject("problem")),
 });

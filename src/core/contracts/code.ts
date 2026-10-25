@@ -22,12 +22,67 @@ export interface CodeTest {
 	hidden?: boolean;
 }
 
+/** The four exercise kinds (owner, 2026-10-25) — absent reads as write
+ *  (exercises posed before the field):
+ *    write    an editor, an optional skeleton, tests to pass;
+ *    fix      starterCode carries the bug — repair it until the tests pass;
+ *    predict  starterCode is read-only; the learner locks a prediction of
+ *             its output on `stdin`, then MAY run it (only on his click);
+ *    fill     starterCode marks holes with CODE_HOLE — only they edit. */
+export const CODE_EXERCISE_KINDS = ["write", "fix", "predict", "fill"] as const;
+export type CodeExerciseKind = (typeof CODE_EXERCISE_KINDS)[number];
+
+export const CODE_KIND_LABEL: Record<CodeExerciseKind, string> = {
+	write: "Write",
+	fix: "Fix",
+	predict: "Predict the output",
+	fill: "Fill the gaps",
+};
+
+/** A hole in a fill exercise's starterCode — a C comment, so the starter
+ *  still highlights as code before the editor swaps it for a gap. */
+export const CODE_HOLE = "/*__*/";
+
 /** A coding exercise as a tool poses it. */
 export interface CodeExercise {
 	language: CodeLanguage;
-	/** What the editor opens with. */
+	kind?: CodeExerciseKind;
+	/** What the editor opens with (required for fix, predict and fill). */
 	starterCode?: string;
-	tests: CodeTest[];
+	/** write/fix/fill: the graded cases. predict: none. */
+	tests?: CodeTest[];
+	/** predict: the program's standard input (absent = none). */
+	stdin?: string;
+}
+
+export function exerciseKind(exercise: Pick<CodeExercise, "kind">): CodeExerciseKind {
+	return exercise.kind && (CODE_EXERCISE_KINDS as readonly string[]).includes(exercise.kind) ? exercise.kind : "write";
+}
+
+export function exerciseTests(exercise: Pick<CodeExercise, "tests">): CodeTest[] {
+	return Array.isArray(exercise.tests) ? exercise.tests : [];
+}
+
+/** A fill starter → the editor's document (markers removed) and each
+ *  hole's offset in it. */
+export function splitHoles(starter: string): { doc: string; holes: number[] } {
+	const parts = starter.split(CODE_HOLE);
+	const holes: number[] = [];
+	let doc = parts[0]!;
+	for (const part of parts.slice(1)) {
+		holes.push(doc.length);
+		doc += part;
+	}
+	return { doc, holes };
+}
+
+/** What the learner hands in: the source, the run the tutor reads (null
+ *  when a predict was sent without running) and, for predict, the
+ *  prediction locked before any run. */
+export interface CodeSubmission {
+	source: string;
+	result: CodeRunResult | null;
+	prediction?: string;
 }
 
 /** POST /api/code/run body. Without `tests`, the program runs once on `stdin`. */
@@ -107,6 +162,76 @@ export function parseCodeRunRequest(body: unknown): CodeRunRequest {
 	return request;
 }
 
+/** POST /api/code/complete and /api/code/diagnostics bodies (clangd, owner
+ *  2026-10-25): the editor's whole document under a stable id, and for
+ *  completion the caret's offset (UTF-16, as JS strings and LSP count). */
+export interface CodeAssistRequest {
+	docId: string;
+	language: CodeLanguage;
+	source: string;
+	offset?: number;
+}
+
+/** One completion as the editor applies it: replace [from, to) with
+ *  `insert` — an LSP snippet (`${1:arg}`, `$0`) when `snippet`. */
+export interface CodeCompletion {
+	label: string;
+	detail?: string;
+	/** LSP CompletionItemKind. */
+	kind?: number;
+	insert: string;
+	snippet: boolean;
+	from: number;
+	to: number;
+}
+
+export interface CodeDiagnostic {
+	from: number;
+	to: number;
+	severity: "error" | "warning" | "info";
+	message: string;
+}
+
+/** `available: false` — no clangd on this machine; the editor stops asking. */
+export type CodeCompletionResult = { available: boolean; items: CodeCompletion[] };
+export type CodeDiagnosticsResult = { available: boolean; diagnostics: CodeDiagnostic[] };
+
+/** Validate an assist body (the routes' 400 gate). `withOffset`: completion. */
+export function parseCodeAssistRequest(body: unknown, withOffset: boolean): CodeAssistRequest {
+	const o = body as Record<string, unknown> | null;
+	if (!o || typeof o !== "object") throw new CodeRunRequestError("body must be an object");
+	if (typeof o.docId !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(o.docId)) throw new CodeRunRequestError("docId must be 1-100 letters, digits, _ or -");
+	if (!isLanguage(o.language)) throw new CodeRunRequestError(`language must be one of ${CODE_LANGUAGES.join(", ")}`);
+	if (typeof o.source !== "string" || o.source.length > CODE_LIMITS.maxSourceBytes) throw new CodeRunRequestError("source must be a string within limits");
+	const request: CodeAssistRequest = { docId: o.docId, language: o.language, source: o.source };
+	if (withOffset) {
+		if (typeof o.offset !== "number" || !Number.isInteger(o.offset) || o.offset < 0 || o.offset > o.source.length) {
+			throw new CodeRunRequestError("offset must be an integer position inside source");
+		}
+		request.offset = o.offset;
+	}
+	return request;
+}
+
+/** Offset → LSP position (0-based line, UTF-16 character). */
+export function offsetToPosition(source: string, offset: number): { line: number; character: number } {
+	const before = source.slice(0, offset);
+	const line = before.split("\n").length - 1;
+	return { line, character: offset - (before.lastIndexOf("\n") + 1) };
+}
+
+/** LSP position → offset, clamped into the source. */
+export function positionToOffset(source: string, position: { line: number; character: number }): number {
+	let offset = 0;
+	for (let line = 0; line < position.line; line++) {
+		const next = source.indexOf("\n", offset);
+		if (next === -1) return source.length;
+		offset = next + 1;
+	}
+	const lineEnd = source.indexOf("\n", offset);
+	return Math.min(offset + Math.max(0, position.character), lineEnd === -1 ? source.length : lineEnd);
+}
+
 /** Normalize program output for comparison: CRLF → LF, trailing spaces
  *  on each line and trailing blank lines dropped. */
 export function normalizeOutput(text: string): string {
@@ -175,8 +300,65 @@ export function renderCodeSubmission(language: CodeLanguage, source: string, res
 export function codeExerciseProblems(exercise: CodeExercise): string[] {
 	const problems: string[] = [];
 	if (!isLanguage(exercise.language)) problems.push(`code.language must be one of ${CODE_LANGUAGES.join(", ")}`);
+	if (exercise.kind !== undefined && !(CODE_EXERCISE_KINDS as readonly string[]).includes(exercise.kind)) {
+		problems.push(`code.kind must be one of ${CODE_EXERCISE_KINDS.join(", ")}`);
+		return problems;
+	}
+	const kind = exerciseKind(exercise);
+	const starter = typeof exercise.starterCode === "string" ? exercise.starterCode : "";
+	if (kind === "predict") {
+		if (!starter.trim()) problems.push("code.starterCode is REQUIRED for predict: the complete program the learner reads");
+		if (exercise.tests !== undefined && exerciseTests(exercise).length > 0) {
+			problems.push("code.tests must be omitted for predict: the learner predicts the output, and your modelSolution holds the exact expected output");
+		}
+		if (exercise.stdin !== undefined && (typeof exercise.stdin !== "string" || exercise.stdin.length > CODE_LIMITS.maxStdinBytes)) {
+			problems.push("code.stdin must be a string within limits");
+		}
+		return problems;
+	}
+	if (exercise.stdin !== undefined) problems.push("code.stdin is only for predict — the other kinds feed input through tests");
+	if (kind === "fix" && !starter.trim()) problems.push("code.starterCode is REQUIRED for fix: the program with the bug to repair");
+	if (kind === "fill" && !starter.includes(CODE_HOLE)) problems.push(`code.starterCode for fill needs at least one ${CODE_HOLE} hole marker`);
+	// Two gaps touching would sit at one position and grow together.
+	if (kind === "fill" && starter.includes(CODE_HOLE + CODE_HOLE)) problems.push(`code.starterCode for fill: two ${CODE_HOLE} gaps must be separated by code`);
 	if (!Array.isArray(exercise.tests) || exercise.tests.length === 0) problems.push("code.tests needs at least one test case");
 	else if (exercise.tests.length > CODE_LIMITS.maxTests) problems.push(`code.tests allows at most ${CODE_LIMITS.maxTests} cases`);
 	else if (exercise.tests.every((t) => t.hidden)) problems.push("code.tests needs at least one VISIBLE test (hidden: false) so the learner can see the expected format");
 	return problems;
+}
+
+/**
+ * Any submission as the TUTOR reads it. write/fix/fill: the code and its
+ * test run (renderCodeSubmission). predict: the program, the prediction
+ * the learner LOCKED before running anything, then the real output if he
+ * chose to run it — compared for the tutor, who still grades against the
+ * output committed in modelSolution.
+ */
+export function renderExerciseSubmission(exercise: CodeExercise, submission: CodeSubmission): string {
+	if (exerciseKind(exercise) !== "predict") {
+		const result = submission.result ?? { compile: { ok: false, output: "(the submission carried no run)", ms: 0 }, cases: [] };
+		return renderCodeSubmission(exercise.language, submission.source, result);
+	}
+	const lines: string[] = [`Code (${CODE_LANGUAGE_LABEL[exercise.language]}):`, fence(exercise.language, submission.source)];
+	if (exercise.stdin) lines.push("stdin:", fence("text", exercise.stdin));
+	lines.push("Predicted output (locked before any run):", fence("text", submission.prediction ?? ""));
+	const result = submission.result;
+	if (!result) {
+		lines.push("Not run — the learner sent the prediction without running the code.");
+		return lines.join("\n");
+	}
+	if (!result.compile.ok) {
+		lines.push("The learner ran it — compilation FAILED:", fence("text", result.compile.output || "(no compiler output)"));
+		return lines.join("\n");
+	}
+	const run = result.cases[0];
+	if (!run) {
+		lines.push("The learner ran it — no output was captured.");
+		return lines.join("\n");
+	}
+	const status = caseStatus(run);
+	lines.push(`The learner ran it — actual output (${status}):`, fence("text", run.stdout + (run.truncated ? "\n(truncated)" : "")));
+	if (run.stderr.trim()) lines.push("stderr:", fence("text", run.stderr.slice(0, 2000)));
+	lines.push(`Prediction matches the actual output: ${outputsMatch(run.stdout, submission.prediction ?? "") ? "yes" : "no"}.`);
+	return lines.join("\n");
 }

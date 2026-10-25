@@ -29,7 +29,7 @@
 
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
-import { quizDisplayInputSchema, askInputSchema, askOptionProblems, quizInputProblems, explainInputProblems, explainDisplayInputSchema, type AskToolInput, type QuizToolInput, type ExplainToolInput } from "./question-core.ts";
+import { quizDisplayInputSchema, askInputSchema, askOptionProblems, quizInputProblems, explainInputProblems, explainDisplayInputSchema, exerciseDisplayInputSchema, exerciseInputProblems, type AskToolInput, type QuizToolInput, type ExplainToolInput, type ExerciseToolInput } from "./question-core.ts";
 import { repairMathForDisplay } from "./math-delims.ts";
 import { healEncodedArguments } from "./argument-heal.ts";
 import { probeDoneInputSchema, type ProbeDoneInput } from "./contracts/probe.ts";
@@ -130,6 +130,16 @@ export function parseExplainInput(input: unknown): ExplainToolInput | undefined 
 	const cleaned = boundaryParse<ExplainToolInput>(explainDisplayInputSchema, restoreMathEscapesDeep(input));
 	if (!cleaned) return undefined;
 	if (explainInputProblems(cleaned).length > 0) return undefined;
+	return cleaned;
+}
+
+/** Exercise parse for DISPLAY (owner, 2026-10-25): the display schema
+ *  (base + lenient optional `type`, nodeId stripped) and the authoring
+ *  contract (commitment + a well-formed code exercise for its kind). */
+export function parseExerciseInput(input: unknown): ExerciseToolInput | undefined {
+	const cleaned = boundaryParse<ExerciseToolInput>(exerciseDisplayInputSchema, restoreMathEscapesDeep(input));
+	if (!cleaned) return undefined;
+	if (exerciseInputProblems(cleaned).length > 0) return undefined;
 	return cleaned;
 }
 

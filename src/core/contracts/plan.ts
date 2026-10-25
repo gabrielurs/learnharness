@@ -137,7 +137,7 @@ export function derivePlanStatusesLh(tree: PlanTree, messages: readonly LhMessag
 		const content = (m as { content?: unknown }).content;
 		if (!Array.isArray(content)) continue;
 		for (const block of content as Array<{ type?: string; name?: string; arguments?: unknown }>) {
-			if (block.type !== "toolCall" || (block.name !== "quiz" && block.name !== "explain")) continue;
+			if (block.type !== "toolCall" || (block.name !== "quiz" && block.name !== "explain" && block.name !== "exercise")) continue;
 			const nodeId = (block.arguments as { nodeId?: unknown } | undefined)?.nodeId;
 			if (typeof nodeId !== "string" || !ids.has(nodeId)) continue;
 			if (runs.at(-1) !== nodeId) runs.push(nodeId);
