@@ -115,6 +115,7 @@ const { stores } = await import("../src/server/stores.ts");
 const { activityFeed } = await import("../src/server/observability.ts");
 const { graphCosts, graphView } = await import("../src/server/graph.ts");
 const { graphCostSummary } = await import("../src/core/cost-summary.ts");
+const { callCost, jobCost } = await import("../src/server/pricing.ts");
 const { graphSnapshot } = await import("../src/core/graph.ts");
 const { catalogContextLimits } = await import("../src/server/model-catalog.ts");
 const { phaseAt3Lh } = await import("../src/core/phases.ts");
@@ -188,7 +189,7 @@ function refFeedJobs() {
 	for (const chat of refListChats()) {
 		for (const job of refListJobs(chat.id)) {
 			if (job.status === "running") {
-				jobs.push({ ...job, title: chat.title ?? chat.id, contextLimit: job.usage ? (limits.get(job.usage.model) ?? null) : null });
+				jobs.push({ ...job, costUsd: jobCost(job), title: chat.title ?? chat.id, contextLimit: job.usage ? (limits.get(job.usage.model) ?? null) : null });
 			}
 		}
 	}
@@ -205,7 +206,7 @@ function refGraphCosts() {
 		.readSources()
 		.filter((s) => s.extractions?.length)
 		.map((s) => ({ filePath: s.filePath, extractions: s.extractions! }));
-	return graphCostSummary({ chats, sources });
+	return graphCostSummary({ chats, sources }, callCost);
 }
 
 /** A ChatStore whose every read is the naive full parse — what the graph

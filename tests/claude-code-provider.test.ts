@@ -12,7 +12,7 @@ import { MCP_SERVER_SOURCE } from "../src/agent/claude-code/mcp-server.ts";
 import { CLAUDE_CODE_PROVIDER } from "../src/agent/claude-code/provider.ts";
 import { piEngineForSpec, piModels } from "../src/agent/models.ts";
 import { createTeacherAgent } from "../src/agent/teacher-agent.ts";
-import { callCost } from "../src/core/prices.ts";
+import { callCost } from "../src/server/pricing.ts";
 
 /**
  * The Claude Code bridge (2026-10-24) — deterministic: a fake `claude`
