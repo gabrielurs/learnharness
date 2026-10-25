@@ -9,6 +9,7 @@ import {
 	focusElapsed,
 	formatClock,
 	isRunning,
+	nextClockWake,
 	onStudyActivity,
 	pause,
 	remainingMs,
@@ -86,5 +87,32 @@ describe("study timer (fork, 2026-10-24)", () => {
 		assert.deepEqual(sanitizeTimerSettings(null), S);
 		assert.equal(formatClock(25 * MIN), "25:00");
 		assert.equal(formatClock(61_500), "01:02");
+	});
+});
+
+// The pill's clock wakes only when its label can change (battery round,
+// 2026-10-25): never while idle or paused, on each second boundary while
+// visible, once at the phase end while hidden.
+describe("study timer clock wakeups", () => {
+	it("idle and paused never wake", () => {
+		assert.equal(nextClockWake(IDLE_TIMER, 0, false), null);
+		const paused = pause(startFocus(IDLE_TIMER, S, 0), 10_000);
+		assert.equal(nextClockWake(paused, 20_000, false), null);
+		assert.equal(nextClockWake(paused, 20_000, true), null);
+	});
+
+	it("visible: the next second boundary, where the rounded-up label flips", () => {
+		const st = startFocus(IDLE_TIMER, S, 0); // ends at 25 min
+		assert.equal(nextClockWake(st, 0, false), 1000, "exactly on a boundary → a full second");
+		assert.equal(nextClockWake(st, 250, false), 750);
+		const wake = 250 + nextClockWake(st, 250, false)!;
+		assert.notEqual(formatClock(remainingMs(st, wake - 1)), formatClock(remainingMs(st, wake)), "the label flips at the wake");
+	});
+
+	it("hidden: one wake at the phase end, then none once it has ended", () => {
+		const st = startFocus(IDLE_TIMER, S, 0);
+		assert.equal(nextClockWake(st, 60_000, true), 25 * MIN - 60_000);
+		assert.equal(nextClockWake(st, 25 * MIN, true), null);
+		assert.equal(nextClockWake(st, 25 * MIN, false), null);
 	});
 });

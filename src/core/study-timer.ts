@@ -170,6 +170,21 @@ export function formatClock(ms: number): string {
 	return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
+/**
+ * When the pill's clock next needs to wake, in ms from now — null when
+ * nothing changes on its own (idle, paused, or the phase already ended).
+ * Visible: the next second boundary of the countdown (formatClock rounds
+ * up, so the label flips exactly as `remaining` crosses a multiple of
+ * 1000). Hidden: one wake at the phase end — the chime and notification
+ * — and nothing in between, so a background tab costs no wakeups.
+ */
+export function nextClockWake(state: TimerState, now: number, hidden: boolean): number | null {
+	if (!isRunning(state)) return null;
+	const left = remainingMs(state, now);
+	if (left <= 0) return null;
+	return hidden ? left : left % 1000 || 1000;
+}
+
 export function formatDuration(ms: number): string {
 	const min = Math.floor(ms / MIN);
 	return min >= 60 ? `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, "0")} min` : `${min} min`;

@@ -14,6 +14,7 @@ import {
 	formatClock,
 	formatDuration,
 	isRunning,
+	nextClockWake,
 	onStudyActivity,
 	pause,
 	phaseMinutes,
@@ -130,11 +131,30 @@ export function StudyTimer() {
 		return () => window.removeEventListener(STUDY_ACTIVITY_EVENT, onActivity);
 	}, [commit]);
 
-	// The tick: repaint, and roll the phase over when it ends.
+	// The tick: repaint, and roll the phase over when it ends. Only while a
+	// phase runs — idle and paused never wake the CPU — on each second
+	// boundary when visible, once at the phase end when hidden.
+	const runningState = data && isRunning(data.state) ? data.state : null;
 	useEffect(() => {
-		const id = setInterval(() => setNow(Date.now()), 1000);
-		return () => clearInterval(id);
-	}, []);
+		if (!runningState) return;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const tick = () => {
+			const t = Date.now();
+			setNow(t);
+			const wait = nextClockWake(runningState, t, document.hidden);
+			timer = wait === null ? undefined : setTimeout(tick, wait);
+		};
+		const onVisibility = () => {
+			clearTimeout(timer);
+			tick();
+		};
+		tick();
+		document.addEventListener("visibilitychange", onVisibility);
+		return () => {
+			clearTimeout(timer);
+			document.removeEventListener("visibilitychange", onVisibility);
+		};
+	}, [runningState]);
 	useEffect(() => {
 		if (!data || !isRunning(data.state) || remainingMs(data.state, now) > 0) return;
 		const ended = data.state.phase;
@@ -181,7 +201,9 @@ export function StudyTimer() {
 	if (!data) return null;
 	const { state, settings } = data;
 	const t = Date.now();
-	const left = remainingMs(state, now);
+	// Render-time clock, not `now`: `now` only advances while a phase runs,
+	// so after an idle stretch it is stale for the first frame of a start.
+	const left = remainingMs(state, t);
 	const running = isRunning(state);
 	const today = todayFocusMs(data.daily, t) + (state.phase === "focus" && running ? focusElapsed(state, t) : 0);
 	const level = dailyLevel(today, settings);

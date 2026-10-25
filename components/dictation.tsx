@@ -129,6 +129,9 @@ type SpeechRecognitionLike = {
 	continuous: boolean;
 	interimResults: boolean;
 	onstart: (() => void) | null;
+	/** Fires once audio capture has really begun (absent on engines that
+	 *  don't implement it — then onstart is the best signal there is). */
+	onaudiostart?: (() => void) | null;
 	onresult: ((ev: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null;
 	onerror: ((ev: { error: string }) => void) | null;
 	onend: (() => void) | null;
@@ -144,9 +147,20 @@ export function browserSpeechRecognition(win: unknown = typeof window === "undef
 	return w?.SpeechRecognition ?? w?.webkitSpeechRecognition ?? null;
 }
 
-/** How long one browser-engine segment listens before it is renewed —
- *  under Safari's ~1 minute session cap. */
-const BROWSER_SEGMENT_MS = 45_000;
+/** Browser-engine segment renewal — under Safari's ~1 minute session cap.
+ *  From ROTATE_SOFT_MS of listening a segment renews at the learner's next
+ *  pause (no new result for ROTATE_QUIET_MS), so a renewal never lands
+ *  mid-word; at ROTATE_HARD_MS it renews regardless (owner, 2026-10-25). */
+export const ROTATE_SOFT_MS = 40_000;
+export const ROTATE_QUIET_MS = 700;
+export const ROTATE_HARD_MS = 50_000;
+const ROTATE_POLL_MS = 150;
+
+/** Should a segment that has listened `listeningMs`, with its last result
+ *  `sinceResultMs` ago, be renewed now? */
+export function shouldRotate(listeningMs: number, sinceResultMs: number): boolean {
+	return listeningMs >= ROTATE_HARD_MS || (listeningMs >= ROTATE_SOFT_MS && sinceResultMs >= ROTATE_QUIET_MS);
+}
 
 /** A recognizer error → the short line the button shows (null = benign:
  *  silence, or our own abort). */
@@ -405,7 +419,7 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		const recog = recogRef.current;
 		recogRef.current = null;
 		if (recog) {
-			recog.onstart = recog.onresult = recog.onerror = recog.onend = null;
+			recog.onstart = recog.onaudiostart = recog.onresult = recog.onerror = recog.onend = null;
 			try {
 				recog.abort();
 			} catch {}
@@ -416,7 +430,11 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		sourceRef.current = null;
 		workletRef.current?.disconnect();
 		workletRef.current = null;
-		// The AudioContext is app-lifetime (mitigation C) — nodes die, it stays.
+		// The AudioContext is app-lifetime (mitigation C) — nodes die, it
+		// stays, SUSPENDED: a running context keeps macOS audio I/O awake
+		// (coreaudiod CPU + a sleep-preventing assertion) for as long as the
+		// page lives (battery round, 2026-10-25). openCapture resumes it.
+		void sharedCtx?.suspend().catch(() => {});
 		const ws = wsRef.current;
 		wsRef.current = null;
 		if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -522,8 +540,16 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 				// per-run costs (context creation, module fetch) are gone.
 				const { ctx, module } = ensureAudioGraph();
 				await module;
-				if (ctx.state === "suspended") await ctx.resume();
-				if (gen !== genRef.current) return false;
+				// Unconditional: the last run's teardown may still have its
+				// suspend() queued (state reads "running" until it lands) —
+				// a resume queued after it always wins.
+				await ctx.resume();
+				if (gen !== genRef.current) {
+					// Torn down while resuming: its suspend() already ran, so this
+					// resume undid it. Re-suspend unless a newer run owns the context.
+					if (!dictationActiveFlag) void ctx.suspend().catch(() => {});
+					return false;
+				}
 
 				const worklet = new AudioWorkletNode(ctx, "pcm-capture");
 				workletRef.current = worklet;
@@ -594,21 +620,50 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 					slots.length = 0;
 					if (text) bufferRef.current.push(text);
 				};
-				recog.onstart = () => {
-					dbg("segment start");
-					if (gen !== genRef.current) return;
-					setPhase("recording");
-					if (rotateTimerRef.current) clearTimeout(rotateTimerRef.current);
-					rotateTimerRef.current = setTimeout(() => {
-						if (gen !== genRef.current || recogStoppingRef.current || recogRef.current !== recog) return;
+				// "recording" (the red dot) only once the recognizer really
+				// captures — audiostart where the engine has it, else start —
+				// so nothing said before the dot lights is lost.
+				let listeningSince = 0;
+				let lastResultAt = 0;
+				let lit = false; // this segment has lit the dot
+				const rotateCheck = () => {
+					if (gen !== genRef.current || recogStoppingRef.current || recogRef.current !== recog) return;
+					const t = performance.now();
+					if (shouldRotate(t - listeningSince, t - lastResultAt)) {
 						dbg("rotate");
+						setPhase("connecting"); // the renewal gap captures nothing
 						try {
 							recog.stop(); // → end → commit → next segment
 						} catch {}
-					}, BROWSER_SEGMENT_MS);
+						return;
+					}
+					rotateTimerRef.current = setTimeout(rotateCheck, ROTATE_POLL_MS);
 				};
+				const listening = () => {
+					if (gen !== genRef.current || lit) return; // once per segment
+					lit = true;
+					listeningSince = lastResultAt = performance.now();
+					setPhase("recording");
+					if (rotateTimerRef.current) clearTimeout(rotateTimerRef.current);
+					rotateTimerRef.current = setTimeout(rotateCheck, ROTATE_SOFT_MS);
+				};
+				const hasAudioStart = "onaudiostart" in recog;
+				recog.onstart = () => {
+					dbg("segment start");
+					if (!hasAudioStart) listening();
+				};
+				if (hasAudioStart) {
+					recog.onaudiostart = () => {
+						dbg("audio start");
+						listening();
+					};
+				}
 				recog.onresult = (ev) => {
 					if (gen !== genRef.current) return;
+					// A result proves capture: light the dot even if this engine
+					// never sent audiostart.
+					listening();
+					lastResultAt = performance.now();
 					for (let i = ev.resultIndex; i < ev.results.length; i++) slots[i] = ev.results[i]![0]?.transcript ?? "";
 					dbg("result", { slots: slots.length, chars: slots.join(" ").length });
 				};
@@ -630,7 +685,9 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 						cleanup();
 						return;
 					}
-					// Rotation or the browser's own end: the next segment.
+					// Rotation or the browser's own end: the next segment. Not
+					// listening until it says so (its audiostart relights the dot).
+					setPhase("connecting");
 					if (!spawn()) {
 						setError("The browser paused dictation — press Dictate to continue");
 						cleanup();
@@ -831,7 +888,9 @@ export function DictationBar({ dictation }: { dictation: Dictation }) {
 	 *  error keeps the old behavior (click = retry, which clears). */
 	const keyless = error === DICTATION_KEYLESS;
 	const [levels, setLevels] = useState<number[]>(() => new Array(METER_CELLS).fill(0));
-	const recording = phase === "recording" || phase === "stopping";
+	/** The red dot is the truth (owner, 2026-10-25): lit only while audio
+	 *  is really being captured — dark while connecting or renewing. */
+	const listening = phase === "recording";
 	/** Adaptive cell count (owner round 2): derived from the meter's
 	 *  measured width — narrow rows show fewer bars instead of
 	 *  overflowing under neighbors. */
@@ -930,11 +989,24 @@ export function DictationBar({ dictation }: { dictation: Dictation }) {
 					Stop
 				</button>
 			</Hint>
-			<span className="size-1.5 shrink-0 animate-pulse rounded-full bg-destructive" aria-hidden />
+			<span
+				className={`size-1.5 shrink-0 rounded-full ${listening ? "animate-pulse bg-destructive" : "bg-muted-foreground/40"}`}
+				aria-hidden
+				data-testid="dictation-live"
+				data-listening={listening ? "true" : "false"}
+			/>
+			<span className="sr-only" aria-live="polite">
+				{listening ? "Listening" : phase === "stopping" ? "Finishing" : "Connecting, wait to speak"}
+			</span>
 			{/* Fixed width while recording — nothing ever appends text beside it
 			    (no interims, owner round 1). Cells carry no minimum width; the
-			    COUNT adapts to the measured row space (owner round 2). */}
-			<div ref={meterRef} className="flex h-4 min-w-0 flex-1 items-center gap-[2px]" data-testid="dictation-meter">
+			    COUNT adapts to the measured row space (owner round 2). Dimmed
+			    while not listening: levels then show sound nobody captures. */}
+			<div
+				ref={meterRef}
+				className={`flex h-4 min-w-0 flex-1 items-center gap-[2px] transition-opacity ${listening ? "" : "opacity-40"}`}
+				data-testid="dictation-meter"
+			>
 				{levels.slice(-cellCount).map((v, i) => (
 					<span
 						key={i}
