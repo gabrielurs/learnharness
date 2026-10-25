@@ -163,9 +163,41 @@ function emptyMessage(model: Pick<Model<Api>, "api" | "provider" | "id">): Assis
 
 /** A tool call written as PROSE (the model's own call markup leaking into
  *  text instead of a native call — seen live with Opus mid-lesson). */
-const FAKE_CALL_START = /(?:<(?:\w+:)?function_calls>\s*)?<(?:\w+:)?invoke name="/;
+const FAKE_CALL_START = /(?:<(?:\w+:)?function_calls>\s*)?<(?:\w+:)?invoke name="/g;
 /** Results the model INVENTS for its own fake call — the loop signature. */
 const FAKE_RESULT = /<(?:\w+:)?function_results>|<tool_result[\s>]|<tool_call_error>/;
+const FAKE_RESULT_G = new RegExp(FAKE_RESULT.source, "g");
+
+/** Is `at` inside a fenced code block? Fences are ``` or ~~~ runs (3+)
+ *  opening a line; a fence closes on the same character, at least as long. */
+function insideFence(text: string, at: number): boolean {
+	let open: string | null = null;
+	for (const m of text.slice(0, at).matchAll(/^[ \t]{0,3}(`{3,}|~{3,})/gm)) {
+		const run = m[1]!;
+		if (open === null) open = run;
+		else if (run[0] === open[0] && run.length >= open.length) open = null;
+	}
+	return open !== null;
+}
+
+const atLineStart = (text: string, at: number) => !text.slice(text.lastIndexOf("\n", at - 1) + 1, at).trim();
+
+/** First match of `re` (global) at or after `from` that is leaked MARKUP, not
+ *  an example (audit, 2026-10-25): outside a code fence, and — for matches
+ *  `lineStartOnly` picks — starting a line ("the <tool_result> tag" in a
+ *  sentence is prose). -1 = none. */
+function markupAt(text: string, re: RegExp, from: number, lineStartOnly: (match: string) => boolean = () => false): number {
+	re.lastIndex = from;
+	for (let m = re.exec(text); m; m = re.exec(text)) {
+		if (insideFence(text, m.index)) continue;
+		if (lineStartOnly(m[0]) && !atLineStart(text, m.index)) continue;
+		return m.index;
+	}
+	return -1;
+}
+/** `<tool_result` is also the bridge's own record name — prose may cite it,
+ *  so only a line-start one counts; the others are never prose. */
+const fakeResultAt = (text: string, from: number) => markupAt(text, FAKE_RESULT_G, from, (m) => m.startsWith("<tool_result"));
 
 /** Parse leaked call markup into tool calls (exported for tests). Values
  *  that parse as JSON (arrays, objects, numbers) are taken as JSON; the
@@ -195,7 +227,7 @@ const MAX_TEXT_CHARS = 120_000;
 const IDLE_TIMEOUT_MS = 180_000;
 
 type Block =
-	| { kind: "text"; index: number; capture?: string }
+	| { kind: "text"; index: number; capture?: string; held?: string; scanFrom?: number; midLine?: boolean }
 	| { kind: "thinking"; text: string; signature: string }
 	| { kind: "tool"; index: number; json: string; call: ToolCall }
 	| { kind: "skip" };
@@ -218,6 +250,9 @@ export class BridgeAssembler {
 	constructor(
 		model: Pick<Model<Api>, "api" | "provider" | "id">,
 		private readonly push: (event: AssistantMessageEvent) => void,
+		/** The app tool names served this call: a leaked call naming none of
+		 *  them is an example, not a call. Absent → any name counts. */
+		private readonly served?: ReadonlySet<string>,
 	) {
 		this.output = emptyMessage(model);
 	}
@@ -309,7 +344,8 @@ export class BridgeAssembler {
 			// Capturing a leaked call: nothing more reaches the learner.
 			if (block.capture !== undefined) {
 				block.capture += delta.text ?? "";
-				if (FAKE_RESULT.test(block.capture)) this.endCapture(apiIndex);
+				block.held = (block.held ?? "") + (delta.text ?? "");
+				if (fakeResultAt(block.capture, 0) !== -1) this.endCapture(apiIndex, false);
 				return;
 			}
 			const content = this.output.content[block.index] as TextContent;
@@ -329,7 +365,7 @@ export class BridgeAssembler {
 		const block = this.blocks.get(apiIndex);
 		if (!block) return;
 		if (block.kind === "text") {
-			if (block.capture !== undefined) return this.endCapture(apiIndex);
+			if (block.capture !== undefined) return this.endCapture(apiIndex, true);
 			const text = (this.output.content[block.index] as TextContent).text;
 			this.push({ type: "text_end", contentIndex: block.index, content: text, partial: this.output });
 		} else if (block.kind === "thinking") {
@@ -363,14 +399,17 @@ export class BridgeAssembler {
 	 *  - a text past MAX_TEXT_CHARS → a runaway, end as "length". */
 	private guardText(apiIndex: number, content: TextContent): void {
 		const block = this.blocks.get(apiIndex) as Extract<Block, { kind: "text" }>;
-		const call = content.text.search(FAKE_CALL_START);
+		const call = markupAt(content.text, FAKE_CALL_START, block.scanFrom ?? 0);
 		if (call !== -1) {
 			block.capture = content.text.slice(call);
-			content.text = content.text.slice(0, call).trimEnd();
-			if (FAKE_RESULT.test(block.capture)) this.endCapture(apiIndex);
+			block.midLine = !atLineStart(content.text, call);
+			const kept = content.text.slice(0, call).trimEnd();
+			block.held = content.text.slice(kept.length);
+			content.text = kept;
+			if (fakeResultAt(block.capture, 0) !== -1) this.endCapture(apiIndex, false);
 			return;
 		}
-		const result = content.text.search(FAKE_RESULT);
+		const result = fakeResultAt(content.text, block.scanFrom ?? 0);
 		const runaway = content.text.length > MAX_TEXT_CHARS;
 		if (result === -1 && !runaway) return;
 		if (result !== -1) content.text = content.text.slice(0, result).trimEnd();
@@ -380,17 +419,47 @@ export class BridgeAssembler {
 		this.finish();
 	}
 
-	/** Close a captured leaked call: recover every complete invoke as a
-	 *  real tool call and end the message there; nothing recoverable → the
-	 *  turn fails honestly (the learner's Retry). */
-	private endCapture(apiIndex: number): void {
+	/** Close a captured leaked call (atStop: the block ended; else an
+	 *  invented result ended it):
+	 *  - complete invokes of SERVED tools → real calls; prose and unserved
+	 *    examples before the first one are given back as text;
+	 *  - only unserved invokes, or an incomplete mid-line mention → an
+	 *    example: given back, streaming continues — unless an invented
+	 *    result follows (a hallucinated tool loop): cut there instead;
+	 *  - an incomplete line-start call → the turn fails honestly (Retry). */
+	private endCapture(apiIndex: number, atStop: boolean): void {
 		const block = this.blocks.get(apiIndex) as Extract<Block, { kind: "text" }>;
 		const markup = block.capture ?? "";
+		const held = block.held ?? markup;
 		block.capture = undefined;
-		const text = (this.output.content[block.index] as TextContent).text;
-		this.push({ type: "text_end", contentIndex: block.index, content: text, partial: this.output });
+		block.held = undefined;
+		const content = this.output.content[block.index] as TextContent;
+		const parsed = parseLeakedCalls(markup);
+		const served = (name: string) => !this.served || this.served.has(name);
+		const calls = parsed.filter((c) => served(c.name));
+		const example = calls.length === 0 && (parsed.length > 0 || block.midLine);
+		if (example && atStop) {
+			this.giveBack(block, content, held);
+			this.push({ type: "text_end", contentIndex: block.index, content: content.text, partial: this.output });
+			this.blocks.delete(apiIndex);
+			return;
+		}
+		if (example) {
+			// Unserved markup followed by an invented result: the model is
+			// role-playing a tool loop. Keep what it said before; end there.
+			this.push({ type: "text_end", contentIndex: block.index, content: content.text, partial: this.output });
+			this.blocks.delete(apiIndex);
+			this.finish();
+			return;
+		}
+		if (calls.length > 0) {
+			// Give back whatever came before the first served invoke.
+			const first = [...markup.matchAll(/<(?:\w+:)?invoke name="([^"]+)">/g)].find((m) => served(m[1]!.replace(BRIDGE_TOOL_PREFIX, "")));
+			const before = held.slice(0, held.length - markup.length + (first?.index ?? 0)).replace(/<(?:\w+:)?function_calls>\s*$/, "").trimEnd();
+			if (before.trim()) this.giveBack(block, content, before);
+		}
+		this.push({ type: "text_end", contentIndex: block.index, content: content.text, partial: this.output });
 		this.blocks.delete(apiIndex);
-		const calls = parseLeakedCalls(markup);
 		console.warn(`[claude-code] tool call written as text — recovered ${calls.length}: ${markup.slice(0, 300).replace(/\s+/g, " ")}`);
 		if (calls.length === 0) {
 			this.fail("error", "Claude wrote a tool call as text and it could not be recovered — press Retry");
@@ -404,6 +473,14 @@ export class BridgeAssembler {
 			this.push({ type: "toolcall_end", contentIndex: index, toolCall, partial: this.output });
 		});
 		this.finish();
+	}
+
+	/** Return held text to the visible message; later scans start after it. */
+	private giveBack(block: Extract<Block, { kind: "text" }>, content: TextContent, text: string): void {
+		content.text += text;
+		block.scanFrom = content.text.length;
+		block.midLine = undefined;
+		this.push({ type: "text_delta", contentIndex: block.index, delta: text, partial: this.output });
 	}
 
 	private finish(): void {
@@ -473,7 +550,8 @@ function writeCallFiles(dir: string, systemPrompt: string, tools: readonly Tool[
 /** Stream one model request through `claude -p`. */
 export function streamClaudeCode(model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
-	const assembler = new BridgeAssembler(model, (event) => stream.push(event));
+	const { systemPrompt, content, tools } = renderBridgePrompt(context);
+	const assembler = new BridgeAssembler(model, (event) => stream.push(event), new Set(tools.map((t) => t.name)));
 	let ended = false;
 	const end = () => {
 		if (ended) return;
@@ -490,7 +568,6 @@ export function streamClaudeCode(model: Model<Api>, context: TranscriptContext, 
 		return stream;
 	}
 
-	const { systemPrompt, content, tools } = renderBridgePrompt(context);
 	const callDir = mkdtempSync(path.join(scratchRoot(), "call-"));
 	const files = writeCallFiles(callDir, systemPrompt, tools);
 

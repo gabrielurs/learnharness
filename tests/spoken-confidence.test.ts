@@ -39,6 +39,39 @@ describe("spoken confidence", () => {
 		assert.equal(spokenConfidence("70% seguro"), 70, "the numeric form beats its own trailing word");
 	});
 
+	it("ordinary answer text is not read as confidence (audit, 2026-10-25)", () => {
+		assert.equal(spokenConfidence("estoy setenta y cinco por ciento seguro"), 75);
+		assert.equal(spokenConfidence("seventy-five percent sure"), 75);
+		assert.equal(spokenConfidence("no estoy seguro de que sean 100"), 30);
+		assert.equal(spokenConfidence("estoy seguro de que es 20"), 90);
+		assert.equal(spokenConfidence("I'm sure the answer is 42"), 90);
+		assert.equal(spokenConfidence("the 95% confidence interval"), null);
+		assert.equal(spokenConfidence("intervalo de confianza del 95%"), null);
+		assert.equal(spokenConfidence("con un nivel de confianza del 99%"), null);
+		assert.equal(spokenConfidence("no dudo que sea la B"), 90);
+		assert.equal(spokenConfidence("no tengo dudas"), 90);
+		assert.equal(spokenConfidence("la opción segura es la 3"), null);
+		assert.equal(spokenConfidence("there are 3 certain cases"), null);
+		assert.equal(spokenConfidence("hay 3 opciones seguras"), null);
+		assert.equal(spokenConfidence("I'm not sure about 2 of them"), 30);
+		assert.equal(spokenConfidence("1234% seguro"), null);
+		assert.equal(spokenConfidence("99,5% seguro"), null);
+		assert.equal(spokenConfidence("tengo confianza de tenis"), null);
+		assert.equal(spokenConfidence("no estoy 100% seguro"), 30);
+		assert.equal(spokenConfidence("no estoy cien por cien seguro"), 30);
+		assert.equal(spokenConfidence("I'm not 100% sure"), 30);
+		assert.equal(spokenConfidence("estoy seguro de 3 cosas"), 90);
+		assert.equal(spokenConfidence("I'm sure of 2 things"), 90);
+		assert.equal(spokenConfidence("tengo confianza en 3 de ellas"), null);
+		assert.equal(spokenConfidence("intervalo del 95% de confianza"), null);
+		// still read:
+		assert.equal(spokenConfidence("con un 60% de confianza"), 60);
+		assert.equal(spokenConfidence("tengo un 60% de confianza"), 60);
+		assert.equal(spokenConfidence("estoy segura en un 80%"), 80);
+		assert.equal(spokenConfidence("estoy 70 seguro"), 70);
+		assert.equal(spokenConfidence("sure at 90 percent"), 90);
+	});
+
 	it("snaps to the nearest slider stop, ties down", () => {
 		const stop = (v: number) => CONFIDENCE_STOPS[confidenceStopIndex(v)];
 		assert.equal(stop(50), 50);

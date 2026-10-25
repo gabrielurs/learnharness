@@ -8,6 +8,8 @@ export type { WebSearchResult };
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
 import TurndownService from "turndown";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 
 /**
  * Server-side web tools for the researcher sub-agent — a minimal port of the
@@ -82,8 +84,26 @@ function htmlToMarkdown(html: string): { title: string; content: string } | null
 	return { title: article.title ?? "", content: markdown };
 }
 
+const MAX_REDIRECTS = 5;
+
+/** Fetch with every redirect hop re-checked against the public-web guard
+ *  (fork, 2026-10-25 — `fetch` follows redirects on its own, so a public
+ *  URL redirecting to 127.0.0.1 used to read this app's own API). */
+export async function fetchPublic(url: string, init: RequestInit): Promise<Response> {
+	let current = url;
+	for (let hop = 0; ; hop++) {
+		await assertPublicUrl(current);
+		const resp = await fetch(current, { ...init, redirect: "manual" });
+		const location = resp.status >= 300 && resp.status < 400 ? resp.headers.get("location") : null;
+		if (!location) return resp;
+		await resp.body?.cancel().catch(() => {});
+		if (hop >= MAX_REDIRECTS) throw new Error("Too many redirects");
+		current = new URL(location, current).toString();
+	}
+}
+
 async function fetchAndExtract(url: string): Promise<string> {
-	const resp = await fetch(url, {
+	const resp = await fetchPublic(url, {
 		headers: {
 			"User-Agent": USER_AGENT,
 			Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -128,16 +148,54 @@ async function fetchAndExtract(url: string): Promise<string> {
 	throw new Error("Could not extract readable content (the page may be JavaScript-rendered)");
 }
 
-/** Loopback, private, link-local and local-name hosts (literal checks —
- *  exported for tests). */
+/** The public-web guard's verdict on one host (fork, 2026-10-25). */
+export class PrivateAddressError extends Error {}
+
+/** IPv4 dotted quad of an IPv4-mapped IPv6 address (`::ffff:7f00:1` or
+ *  `::ffff:127.0.0.1` — the URL parser emits the hex form), else null. */
+function mappedV4(h: string): string | null {
+	const dotted = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+	if (dotted) return dotted[1]!;
+	const hex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+	if (!hex) return null;
+	const hi = parseInt(hex[1]!, 16);
+	const lo = parseInt(hex[2]!, 16);
+	return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+}
+
+/** Loopback, private, link-local, multicast and local-name hosts — literal
+ *  checks on a hostname or IP (exported for tests). Names are lowercased,
+ *  bracket- and trailing-dot-stripped (`localhost.` resolves too). */
 export function isPrivateHost(hostname: string): boolean {
-	const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+	const h = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
 	if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return true;
-	if (h === "::1" || h === "::" || h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return true;
-	const v4 = h.replace(/^::ffff:/, "").match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-	if (!v4) return false;
-	const [a, b] = [Number(v4[1]), Number(v4[2])];
-	return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+	const v4text = mappedV4(h) ?? h;
+	const v4 = v4text.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+	if (v4) {
+		const [a, b] = [Number(v4[1]), Number(v4[2])];
+		return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+	}
+	// IPv6 prefixes only on IPv6 literals — `fcc.gov` / `fdroid.org` are names.
+	if (!h.includes(":")) return false;
+	return h === "::1" || h === "::" || /^fe[89ab]/.test(h) || /^f[cd]/.test(h) || h.startsWith("ff");
+}
+
+/** Refuse a URL whose host is private — literally, or by what its name
+ *  RESOLVES to (`127.0.0.1.nip.io`). Residual: a DNS answer that changes
+ *  between this lookup and fetch's own (rebinding with a tiny TTL). */
+async function assertPublicUrl(url: string): Promise<void> {
+	const parsed = new URL(url);
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new PrivateAddressError("Only http(s) URLs are supported");
+	const host = parsed.hostname.replace(/^\[|\]$/g, "").replace(/\.+$/, "");
+	if (isPrivateHost(host)) throw new PrivateAddressError(`${parsed.hostname} is a local or private-network address`);
+	if (isIP(host)) return;
+	// Fail closed: a lookup that errors here and succeeds inside fetch is a
+	// rebinding window.
+	const addresses = await lookup(host, { all: true }).catch(() => {
+		throw new Error(`could not resolve ${parsed.hostname}`);
+	});
+	const blocked = addresses.find((a) => isPrivateHost(a.address));
+	if (blocked) throw new PrivateAddressError(`${parsed.hostname} resolves to a local or private-network address (${blocked.address})`);
 }
 
 // ── tool registry ────────────────────────────────────────────────────────────
@@ -199,13 +257,12 @@ export function createWebTools(search: () => SearchProvider | null): Record<stri
 				// Public web only (fork, 2026-10-24 — web_fetch is now always on
 				// for the conversation agents): a fetched page could steer the
 				// agent toward the learner's own machine or LAN (this app's API
-				// included). Literal private/loopback hosts are refused.
-				if (isPrivateHost(new URL(url).hostname)) {
-					return `web_fetch refused: ${new URL(url).hostname} is a local or private-network address`;
-				}
+				// included). Private hosts are refused — literally, by DNS, and
+				// on every redirect hop (fetchPublic).
 				try {
 					return await fetchAndExtract(url);
 				} catch (err) {
+					if (err instanceof PrivateAddressError) return `web_fetch refused: ${err.message}`;
 					return `web_fetch failed for ${url}: ${err instanceof Error ? err.message : String(err)}`;
 				}
 			}),

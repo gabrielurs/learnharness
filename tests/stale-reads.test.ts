@@ -19,7 +19,8 @@ describe("stale bulky reads", () => {
 	});
 
 	it("elides it once the learner has spoken again — the record untouched", () => {
-		const record = [user("lee esto"), call("f1", "web_fetch", { url: "https://e.com/page" }), result("f1", "web_fetch", big), user("vale, sigue")];
+		const reply = { id: "a_reply", role: "assistant", content: [{ type: "text", text: "Leído." }], stopReason: "stop", timestamp: 1 } as unknown as LhMessage;
+		const record = [user("lee esto"), call("f1", "web_fetch", { url: "https://e.com/page" }), result("f1", "web_fetch", big), reply, user("vale, sigue")];
 		const out = toLlmMessages(record);
 		const stub = textOf(out[2]);
 		assert.match(stub, /web_fetch result elided from context/);
@@ -43,5 +44,30 @@ describe("stale bulky reads", () => {
 		assert.match(textOf(out[1]), /read result elided.*notes\.md/);
 		assert.equal(textOf(out[3]), JSON.stringify([{ type: "text", text: "short page" }]));
 		assert.ok(!textOf(out[5]).includes("elided"), "only web_fetch/read elide");
+	});
+
+	it("a read the model never answered after stays whole (audit, 2026-10-25)", () => {
+		// A steer lands right after the fetch result.
+		const steered = toLlmMessages([user("lee esto"), call("f1", "web_fetch", { url: "https://e.com" }), result("f1", "web_fetch", big), user("y fíjate en la tabla")]);
+		assert.ok(!textOf(steered[2]).includes("elided"));
+		// The fetch and a question in ONE message; the answer arrives later.
+		const both = {
+			id: "a_both",
+			role: "assistant",
+			content: [
+				{ type: "toolCall", id: "f2", name: "web_fetch", arguments: { url: "https://e.com" } },
+				{ type: "toolCall", id: "q2", name: "quiz", arguments: {} },
+			],
+			stopReason: "toolUse",
+			timestamp: 1,
+		} as unknown as LhMessage;
+		const asked = toLlmMessages([user("hola"), both, result("f2", "web_fetch", big), result("q2", "quiz", '{"correct":true}')]);
+		assert.ok(!textOf(asked[2]).includes("elided"));
+		// A failed or aborted reply in between never saw the page either.
+		for (const stopReason of ["error", "aborted"]) {
+			const failed = { id: `a_${stopReason}`, role: "assistant", content: [], stopReason, timestamp: 1 } as unknown as LhMessage;
+			const out = toLlmMessages([user("lee"), call("f3", "web_fetch", { url: "https://e.com" }), result("f3", "web_fetch", big), failed, user("sigue")]);
+			assert.ok(!textOf(out[2]).includes("elided"), stopReason);
+		}
 	});
 });

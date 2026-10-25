@@ -602,17 +602,40 @@ export const DEFAULT_CONFIDENCE_INDEX = 2;
 // how it was said). A bare number never counts: it needs a confidence
 // word beside it, so "el 50% de 20" in a math answer is left alone.
 
-const NUMBER_WORDS: Record<string, number> = {
-	cero: 0, diez: 10, veinte: 20, treinta: 30, cuarenta: 40, cincuenta: 50, sesenta: 60, setenta: 70, ochenta: 80, noventa: 90, cien: 100, ciento: 100,
+const TENS: Record<string, number> = {
+	cero: 0, diez: 10, veinte: 20, treinta: 30, cuarenta: 40, cincuenta: 50, sesenta: 60, setenta: 70, ochenta: 80, noventa: 90, cien: 100,
 	zero: 0, ten: 10, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100,
 };
-const NUM = `(\\d{1,3}|${Object.keys(NUMBER_WORDS).join("|")})`;
-const PCT = `(?:\\s*(?:%|por\\s*ciento|por\\s*cien|percent|per\\s*cent))?`;
+const UNITS: Record<string, number> = {
+	uno: 1, un: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9,
+	one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
+};
+const words = (o: Record<string, number>) => Object.keys(o).join("|");
+// "setenta y cinco" / "seventy-five" compounds before single words; never
+// the "cien(to)" of "por ciento" (audit 2026-10-25: "75 por ciento" read 100).
+// Whole tokens only: "1234%" is not "34%", "tenis" is not "ten".
+const NUM = `(?<!\\bpor\\s{1,3})(?<![\\d.,])(\\d{1,3}(?![\\d.,]?\\d)|(?:${words(TENS)})(?:\\s+y\\s+|[\\s-])(?:${words(UNITS)})\\b|(?:${words(TENS)})\\b)`;
+const PCT_REQ = `\\s*(?:%|por\\s*ciento|por\\s*cien|percent|per\\s*cent)`;
 const SURE = `(?:segur[oa]s?|confianza|confiado|confiada|convencid[oa]|sure|certain|confident|confidence)`;
-/** Numeric forms: "<n>% seguro", "seguro al <n>%", "confianza (de) <n>". */
+/** Statistics, not the learner: "95% confidence interval", "intervalo /
+ *  nivel de confianza del 95%". */
+const NOT_STATS_AFTER = `(?!\\s+intervals?\\b|\\s+levels?\\b)`;
+const NOT_STATS_BEFORE = `(?<!\\b(?:intervalos?|nivel|niveles)\\s+de\\s+)`;
+/** Only these may sit between the confidence word and its number —
+ *  "seguro AL 80%", "confianza DEL 30", "segura EN UN 80%" — so "seguro de
+ *  que es 20" and "sure the answer is 42" are answers, not confidence. */
+const BRIDGE = `(?:(?:al|del|de|en|a|un|una|con|at|of|about|around)\\s+){0,2}`;
+/** "no estoy 100% seguro" / "I'm not 100% sure" negate the number. */
+const NOT_NEGATED = `(?<!\\b(?:no|not)\\s+(?:\\w+\\s+){0,2})`;
+/** No percent sign: the number must END the clause ("confianza de 90.") —
+ *  "seguro de 3 cosas" / "sure of 2 things" count things, not confidence. */
+const CLAUSE_END = `(?=\\s*(?:[.,;:!?)]|$))`;
+/** Numeric forms: "<n>% (de) seguro/confianza" (a percent, or "estoy <n>
+ *  seguro"), "seguro al <n>%", "confianza (de) <n>". */
 const NUMERIC_PATTERNS: RegExp[] = [
-	new RegExp(`${NUM}${PCT}\\s+(?:\\w+\\s+){0,2}?${SURE}`, "gi"),
-	new RegExp(`${SURE}\\s+(?:\\w+\\s+){0,3}?${NUM}${PCT}`, "gi"),
+	new RegExp(`(?<!\\b(?:intervalos?|nivel|niveles)\\s+(?:de|del|al)\\s+)${NOT_NEGATED}${NUM}${PCT_REQ}\\s+(?:de\\s+)?${SURE}${NOT_STATS_AFTER}`, "gi"),
+	new RegExp(`(?<=\\b(?:estoy|estar|soy|i'?m|am)\\s+(?:un\\s+|al\\s+)?)${NUM}\\s+${SURE}`, "gi"),
+	new RegExp(`${NOT_STATS_BEFORE}${NOT_NEGATED}${SURE}\\s+${BRIDGE}${NUM}(?:${PCT_REQ}|${CLAUSE_END})`, "gi"),
 ];
 /** Worded forms → a probability; negatives listed before the plain
  *  "seguro" so "no estoy seguro" never reads as sure. */
@@ -621,15 +644,21 @@ const END = "(?![\\wáéíóúüñ])";
 const phrase = (body: string) => new RegExp(`\\b(?:${body})${END}`, "gi");
 const PHRASES: [RegExp, number][] = [
 	[phrase("no\\s+tengo\\s+(?:ni\\s+)?idea|ni\\s+idea|no\\s+idea|no\\s+lo\\s+s[eé]|i\\s+have\\s+no\\s+idea|no\\s+clue"), 0],
-	[phrase("no\\s+estoy\\s+(?:muy\\s+|nada\\s+)?segur[oa]|no\\s+muy\\s+segur[oa]|dudo|tengo\\s+dudas|not\\s+(?:very\\s+|really\\s+)?sure|unsure"), 30],
+	[phrase("no\\s+estoy\\s+(?:al\\s+)?(?:\\d{1,3}\\s*%|\\d{1,3}\\s+por\\s+cien(?:to)?|cien\\s+por\\s+cien(?:to)?)\\s+segur[oa]|not\\s+(?:\\d{1,3}\\s*%|\\d{1,3}\\s+percent|a\\s+hundred\\s+percent)\\s+sure|no\\s+estoy\\s+(?:muy\\s+|nada\\s+)?segur[oa]|no\\s+muy\\s+segur[oa]|(?<!\\bno\\s+)dudo|(?<!\\bno\\s+)tengo\\s+dudas|not\\s+(?:very\\s+|really\\s+)?sure|unsure"), 30],
 	[phrase("bastante\\s+segur[oa]|creo\\s+que\\s+s[ií]|pretty\\s+sure|fairly\\s+sure|quite\\s+sure"), 70],
 	[phrase("segur[ií]sim[oa]|totalmente\\s+segur[oa]|completamente\\s+segur[oa]|absolutamente\\s+segur[oa]|absolutely\\s+sure|completely\\s+sure|totally\\s+sure|definitely"), 100],
-	[phrase("muy\\s+segur[oa]|estoy\\s+segur[oa]|very\\s+sure|i'?m\\s+sure"), 90],
+	[phrase("muy\\s+segur[oa]|estoy\\s+segur[oa]|very\\s+sure|i'?m\\s+sure|no\\s+dudo|no\\s+tengo\\s+(?:ninguna\\s+)?dudas?"), 90],
 ];
 
 function numberValue(token: string): number | null {
-	const n = /^\d+$/.test(token) ? Number(token) : NUMBER_WORDS[token.toLowerCase()];
-	return n !== undefined && n >= 0 && n <= 100 ? n : null;
+	const t = token.toLowerCase();
+	let n: number | undefined;
+	if (/^\d+$/.test(t)) n = Number(t);
+	else {
+		const [tens, unit] = t.split(/\s+y\s+|[\s-]+/);
+		n = TENS[tens!] !== undefined ? TENS[tens!]! + (unit ? (UNITS[unit] ?? NaN) : 0) : undefined;
+	}
+	return n !== undefined && Number.isFinite(n) && n >= 0 && n <= 100 ? n : null;
 }
 
 /** The confidence (0-100) the text SAYS, or null. When several phrases

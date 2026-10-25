@@ -1,0 +1,51 @@
+import assert from "node:assert/strict";
+import { lookup } from "node:dns/promises";
+import { describe, it } from "node:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { isPrivateHost, webFetchTool } from "../src/agent/tools/web.ts";
+import { createPdfReadTools } from "../src/agent/tools/pdf-read.ts";
+
+/** web_fetch's public-web guard (fork, 2026-10-25 audit): each bypass below
+ *  reached this app's own API before the fix. */
+
+const fetchText = async (url: string) => JSON.stringify((await webFetchTool.execute("t", { url } as never)).content);
+
+describe("web_fetch guard: literal hosts", () => {
+	it("refuses IPv4-mapped IPv6 (both forms) and trailing-dot names", () => {
+		for (const h of ["[::ffff:7f00:1]", "::ffff:127.0.0.1", "[::ffff:c0a8:10a]", "localhost.", "LOCALHOST..", "224.0.0.1", "[fe90::1]", "[ff02::1]"]) {
+			assert.equal(isPrivateHost(h), true, h);
+		}
+	});
+
+	it("no longer refuses public names that merely start with fc/fd", () => {
+		for (const h of ["fcc.gov", "fdroid.org", "fda.gov", "fc2.com"]) assert.equal(isPrivateHost(h), false, h);
+	});
+
+	it("execute refuses the mapped and trailing-dot forms without fetching", async () => {
+		assert.match(await fetchText("http://[::ffff:127.0.0.1]:3000/api/activity"), /refused/);
+		assert.match(await fetchText("http://localhost.:3000/api/activity"), /refused/);
+		assert.match(await fetchText("ftp://example.com/"), /invalid URL|Only http/);
+		assert.match(await fetchText("http://no-such-host.invalid/"), /could not resolve/);
+	});
+
+	it("web_fetch_pdf goes through the same guard", async () => {
+		const pdf = createPdfReadTools(mkdtempSync(path.join(tmpdir(), "lh-pdf-guard-"))).web_fetch_pdf!;
+		const r = JSON.stringify((await pdf.execute("t", { url: "http://127.0.0.1:3000/api/x.pdf" } as never)).content);
+		assert.match(r, /local or private-network address/);
+	});
+});
+
+const online = await lookup("httpbin.org").then(() => true, () => false);
+
+describe("web_fetch guard: DNS and redirects (network)", { skip: online ? false : "offline" }, () => {
+	it("refuses a public name that resolves to loopback", async () => {
+		assert.match(await fetchText("http://127.0.0.1.nip.io:3000/api/activity"), /refused: .*resolves to/);
+	});
+
+	it("refuses a public URL that redirects to loopback", async () => {
+		const target = encodeURIComponent("http://127.0.0.1:3000/api/activity");
+		assert.match(await fetchText(`https://httpbin.org/redirect-to?url=${target}`), /refused: 127\.0\.0\.1/);
+	});
+});

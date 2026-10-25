@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -47,7 +47,8 @@ function sanitizers(compiler: string, env: Record<string, string>): Promise<stri
 			const ran = await exec(path.join(dir, "probe"), [], { cwd: dir, stdin: "", timeoutMs: 3_000, env });
 			return ran.exitCode === 0 && !ran.timedOut ? ["address", "undefined"] : ["undefined"];
 		} finally {
-			rmSync(dir, { recursive: true, force: true });
+			killStragglers(dir);
+			removeRunDir(dir);
 		}
 	})();
 	return sanitizerProbe;
@@ -93,7 +94,14 @@ interface ExecResult {
 	ms: number;
 }
 
-/** Run one process with stdin, a timeout and an output cap. */
+/** After the main process exits, how long its pipes may still drain. A
+ *  descendant that escaped the group (setsid) and holds stdout open would
+ *  otherwise keep `close` — and the run slot — waiting forever. */
+const DRAIN_GRACE_MS = 200;
+
+/** Run one process with stdin, a timeout and an output cap. The whole
+ *  process group is killed when the main process exits too (fork, 2026-10-25
+ *  audit): a fork()ed child used to outlive the run. */
 function exec(bin: string, args: string[], opts: { cwd: string; stdin: string; timeoutMs: number; env: Record<string, string> }): Promise<ExecResult> {
 	return new Promise((resolve) => {
 		const t0 = performance.now();
@@ -102,6 +110,8 @@ function exec(bin: string, args: string[], opts: { cwd: string; stdin: string; t
 		let stderr = "";
 		let truncated = false;
 		let timedOut = false;
+		let done = false;
+		let exited: { code: number | null; signal: string | null } | null = null;
 		const killGroup = () => {
 			try {
 				if (child.pid) process.kill(-child.pid, "SIGKILL");
@@ -116,6 +126,14 @@ function exec(bin: string, args: string[], opts: { cwd: string; stdin: string; t
 			killGroup();
 			return current + chunk.slice(0, Math.max(0, room));
 		};
+		const finish = (result: Omit<ExecResult, "stdout" | "stderr" | "truncated" | "timedOut" | "ms"> & { error?: string }) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			child.stdout.destroy();
+			child.stderr.destroy();
+			resolve({ stdout, stderr: stderr + (result.error ?? ""), exitCode: result.exitCode, signal: result.signal, timedOut, truncated, ms: Math.round(performance.now() - t0) });
+		};
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
 		child.stdout.on("data", (c: string) => (stdout = take(stdout, c)));
@@ -124,17 +142,40 @@ function exec(bin: string, args: string[], opts: { cwd: string; stdin: string; t
 			timedOut = true;
 			killGroup();
 		}, opts.timeoutMs);
-		child.on("error", (err) => {
-			clearTimeout(timer);
-			resolve({ stdout, stderr: stderr + String(err.message), exitCode: null, signal: null, timedOut, truncated, ms: Math.round(performance.now() - t0) });
+		child.on("error", (err) => finish({ exitCode: null, signal: null, error: String(err.message) }));
+		child.on("exit", (code, signal) => {
+			exited = { code, signal };
+			killGroup();
+			setTimeout(() => finish({ exitCode: code, signal }), DRAIN_GRACE_MS);
 		});
-		child.on("close", (code, signal) => {
-			clearTimeout(timer);
-			resolve({ stdout, stderr, exitCode: code, signal, timedOut, truncated, ms: Math.round(performance.now() - t0) });
-		});
+		child.on("close", (code, signal) => finish(exited ? { exitCode: exited.code, signal: exited.signal } : { exitCode: code, signal }));
 		child.stdin.on("error", () => {});
 		child.stdin.end(opts.stdin);
 	});
+}
+
+/** Kill what escaped the process group (setsid): every process still running
+ *  a binary from this run's dir — the path carries its random temp name.
+ *  Known gap: a setsid() child that then exec()s ANOTHER binary no longer
+ *  matches; closing that needs an OS sandbox (sandbox-exec / job limits). */
+function killStragglers(dir: string): void {
+	const escaped = (dir + path.sep).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	spawnSync("pkill", ["-KILL", "-f", `^${escaped}`], { stdio: "ignore" });
+}
+
+/** Remove a run's temp dir even when the program made parts of it
+ *  unreadable (chmod 0); a failure is logged, never the run's result. */
+function removeRunDir(dir: string): void {
+	try {
+		rmSync(dir, { recursive: true, force: true });
+	} catch {
+		try {
+			spawnSync("chmod", ["-R", "u+rwx", dir], { stdio: "ignore" });
+			rmSync(dir, { recursive: true, force: true });
+		} catch (err) {
+			console.warn(`[code-runner] could not remove ${dir}: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
 }
 
 // Compiles are CPU-heavy (sanitizers): at most two at a time.
@@ -208,7 +249,8 @@ export function runCode(request: CodeRunRequest): Promise<CodeRunResult> {
 			}
 			return { compile, cases };
 		} finally {
-			rmSync(dir, { recursive: true, force: true });
+			killStragglers(dir);
+			removeRunDir(dir);
 		}
 	});
 }

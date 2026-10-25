@@ -608,6 +608,19 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 	if (leading) out.push(leading);
 	if (head) out.push(head);
 	const learnerInput = lastLearnerInputIndex(messages);
+	// A read is stale only once the model has RESPONDED after it (audit,
+	// 2026-10-25): a steer landing right after a web_fetch result, or an
+	// answer to a question asked in the same message as the fetch, used to
+	// elide a page the model had never seen.
+	let seenBefore = -1;
+	for (let k = learnerInput - 1; k >= 0; k--) {
+		// A failed / aborted reply is dropped on the wire: it saw nothing.
+		const reply = messages[k] as { role?: string; stopReason?: string };
+		if (reply.role === "assistant" && reply.stopReason !== "error" && reply.stopReason !== "aborted") {
+			seenBefore = k;
+			break;
+		}
+	}
 	const targets = readTargets(messages);
 	for (let i = leading ? Math.max(start, 1) : start; i < messages.length; i++) {
 		const m = messages[i]!;
@@ -631,9 +644,10 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 		}
 		// Strip the record id: the wire carries the native shape only.
 		const { id: _id, ...native } = m as LhMessage;
-		// A bulky read from before the learner's latest input → its stub.
+		// A bulky read the model already answered after, before the learner's
+		// latest input → its stub.
 		const stale =
-			role === "toolResult" && i < learnerInput && STALE_READ_TOOLS.has((m as ToolResultMessage).toolName);
+			role === "toolResult" && i < seenBefore && STALE_READ_TOOLS.has((m as ToolResultMessage).toolName);
 		out.push(stale ? elideStaleRead(native as Message, targets) : (native as Message));
 		// Dangling-call synthesis: an assistant message whose toolCalls have
 		// no results in the remaining tail (abort mid-question) — the
