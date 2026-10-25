@@ -83,12 +83,19 @@ function toolResultBody(result: ToolResultMessage, ctx?: MarkdownContext): { hea
 				correct: boolean;
 				dontKnow: boolean;
 				note: string;
+				thinking: string;
 				text: string;
-				answers: string[];
+				answers: Array<string | { label?: string }>;
 				other: string;
 				dismissed: boolean;
 		  }>
 		| undefined;
+
+	// The learner's reasoning on the question: `thinking` since the
+	// 2026-10-03 rename, `note` on older records. Reading only `note` lost
+	// it for every newer answer in the export (2026-10-25: 48 of 52 live
+	// answers). (The graph extractor reads teacher prose only — not this.)
+	const thinking = typeof out?.thinking === "string" && out.thinking ? out.thinking : typeof out?.note === "string" && out.note ? out.note : undefined;
 
 	if (
 		result.toolName === "quiz" ||
@@ -111,7 +118,7 @@ function toolResultBody(result: ToolResultMessage, ctx?: MarkdownContext): { hea
 		else if (out?.correct === true) body.push("The learner answered correctly.");
 		else if (out?.correct === false) body.push("The learner answered incorrectly.");
 		else if (typeof out?.text === "string" && out.text.trim()) body.push(`The learner answered in his own words: ${out.text.trim()}`);
-		if (typeof out?.note === "string" && out.note) body.push(`*(his thinking: ${out.note})*`);
+		if (thinking) body.push(`*(his thinking: ${thinking})*`);
 		return { heading, body };
 	}
 
@@ -122,8 +129,7 @@ function toolResultBody(result: ToolResultMessage, ctx?: MarkdownContext): { hea
 		const body = [`**Exercise:** ${question}`];
 		if (out?.dismissed === true) body.push("The learner skipped this exercise.");
 		else if (typeof out?.text === "string" && out.text.trim()) body.push(`The learner's submission:\n\n${out.text.trim()}`);
-		const thinking = (out as { thinking?: unknown } | undefined)?.thinking ?? out?.note;
-		if (typeof thinking === "string" && thinking) body.push(`*(his thinking: ${thinking})*`);
+		if (thinking) body.push(`*(his thinking: ${thinking})*`);
 		return { heading: "Exercise", body };
 	}
 
@@ -153,14 +159,16 @@ function toolResultBody(result: ToolResultMessage, ctx?: MarkdownContext): { hea
 	if (result.toolName === "ask_user_question") {
 		const question = typeof out?.questionText === "string" && out.questionText ? out.questionText : "(no question text)";
 		const body = [`**Q:** ${question}`];
+		// Answers are the recorded options ({label, value, index}); plain
+		// strings on any older shape. Joined raw, objects read "[object Object]".
 		const chosen = [
-			...(Array.isArray(out?.answers) ? out!.answers! : []),
+			...(Array.isArray(out?.answers) ? out!.answers!.map((a) => (typeof a === "string" ? a : a?.label ?? "")).filter(Boolean) : []),
 			...(typeof out?.other === "string" && out.other.trim() ? [out.other.trim()] : []),
 		];
 		if (typeof out?.text === "string" && out.text.trim()) body.push(`The learner answered: ${out.text.trim()}`);
 		else if (chosen.length > 0) body.push(`The learner chose: ${chosen.join(", ")}`);
 		else if (out?.dismissed === true) body.push("The learner skipped this question.");
-		if (typeof out?.note === "string" && out.note) body.push(`*(his thinking: ${out.note})*`);
+		if (thinking) body.push(`*(his thinking: ${thinking})*`);
 		return { heading: "Question", body };
 	}
 

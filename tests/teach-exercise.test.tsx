@@ -3,7 +3,7 @@
  * question whose answer is code. Pins the tool boundary (schema, kind
  * validation, the commitment, nodeId), the question pipeline treating it
  * like its siblings (pending gate, plan position, phase seam, learner
- * cause, the extraction view), and the dock → answer → card path with the
+ * cause, the session-markdown export), and the dock → answer → card path with the
  * real CodeMirror under linkedom. Runs under its own LH_DATA_DIR (set
  * before any config-loading import — every app import is dynamic).
  */
@@ -151,7 +151,7 @@ describe("the exercise rides the question pipeline like its siblings", () => {
 		// …and the server reads it as the LEARNER's input (a foreground turn).
 		const result = newAnswerResult("tc1", "exercise", answer);
 		assert.equal(nativeInputCause(result as never, messages as never), "learner");
-		// …and the extraction view shows the submission.
+		// …and the session-markdown export shows the submission.
 		const md = messageMarkdown(result as never, "m1", false)!;
 		assert.match(md, /^### Exercise/);
 		assert.match(md, /The learner's submission:/);

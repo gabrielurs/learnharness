@@ -91,6 +91,33 @@ describe("messageMarkdown", () => {
 		assert.match(md, /\*\(his thinking: mixed up signs\)\*/);
 	});
 
+	// The learner's reasoning lives in `thinking` since the 2026-10-03
+	// rename; the view read only the legacy `note`, so every newer answer's
+	// reasoning was missing from the session export (2026-10-25: 48 of 52
+	// live answers). The graph extractor reads teacher prose only.
+	it("the learner's thinking reaches the view under its current key (and the legacy one)", () => {
+		for (const tool of ["quiz", "explain", "ask_user_question"]) {
+			const md = messageMarkdown(result("r1", "q1", tool, { questionText: "Q?", dontKnow: false, answers: [], thinking: "I split it in two" }), "r1")!;
+			assert.match(md, /\*\(his thinking: I split it in two\)\*/, tool);
+		}
+		const legacy = messageMarkdown(result("r1", "q1", "quiz", { questionText: "Q?", correct: true, dontKnow: false, note: "old key" }), "r1")!;
+		assert.match(legacy, /his thinking: old key/);
+	});
+
+	it("ask answers name the chosen options, never [object Object]", () => {
+		const md = messageMarkdown(
+			result("r1", "a1", "ask_user_question", {
+				questionText: "Which path?",
+				dontKnow: false,
+				answers: [{ label: "Pointers first", value: "p", index: 1 }, { label: "Arrays", value: "a", index: 2 }],
+				other: "both",
+			}),
+			"r1",
+		)!;
+		assert.match(md, /The learner chose: Pointers first, Arrays, both/);
+		assert.doesNotMatch(md, /object Object/);
+	});
+
 	it("explain results: the learner's own words are shown", () => {
 		const md = messageMarkdown(
 			result("r1", "e1", "explain", { questionText: "Why does Mercury stay near the Sun?", text: "it never strays far" }),
