@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Loader2Icon, PlayIcon } from "lucide-react";
 import { CodeEditor } from "@/components/code-editor";
+import { signalStudyActivity } from "@/components/study-activity";
 import { cn } from "@/lib/utils";
 import {
 	CODE_LANGUAGE_LABEL,
@@ -79,6 +80,7 @@ export function CodeExercisePanel({
 
 	const run = useCallback(async () => {
 		if (busy || !sourceRef.current.trim()) return;
+		signalStudyActivity();
 		setBusy("run");
 		setError(null);
 		try {

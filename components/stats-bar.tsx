@@ -1,5 +1,6 @@
 "use client";
 
+import { StudyTimer } from "@/components/study-timer";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { contextWindow, sessionCost, turnCost, type ChatSettings, type TurnUsage } from "@/src/core";
 import { formatTokens, formatUsd, prettyModel } from "@/components/usage-format";
@@ -189,7 +190,12 @@ export function StatsBar({
 			{/* The model + thinking control — one controller for the conversation
 			    agents (prober/teacher); the record's `turns` above still folds
 			    the ACTUAL models billed, regardless of what the picker says. */}
-			<ModelControl chatId={chatId} />
+			{/* The study timer (fork, 2026-10-24): one app-wide timer, beside the
+			    model control on every composer surface. */}
+			<div className="flex shrink-0 items-center gap-1.5">
+				<StudyTimer />
+				<ModelControl chatId={chatId} />
+			</div>
 		</div>
 	);
 }
