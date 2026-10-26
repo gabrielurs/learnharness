@@ -112,6 +112,42 @@ export async function fetchPublic(url: string, init: RequestInit): Promise<Respo
 	}
 }
 
+/** Read a response body as text, aborting past `max` bytes (audit W1,
+ *  2026-10-26 — a chunked body with no Content-Length skipped the cap and
+ *  could exhaust memory). Falls back to resp.text() when there is no
+ *  readable stream (test stubs). */
+async function readCapped(resp: Response, max: number): Promise<string> {
+	const reader = resp.body?.getReader();
+	if (!reader) return resp.text();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > max) {
+				await reader.cancel().catch(() => {});
+				throw new Error("Response too large");
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock?.();
+	}
+	return new TextDecoder("utf-8").decode(concatBytes(chunks, total));
+}
+
+function concatBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
+	const out = new Uint8Array(total);
+	let at = 0;
+	for (const c of chunks) {
+		out.set(c, at);
+		at += c.byteLength;
+	}
+	return out;
+}
+
 async function fetchAndExtract(url: string): Promise<string> {
 	const resp = await fetchPublic(url, {
 		headers: {
@@ -140,7 +176,7 @@ async function fetchAndExtract(url: string): Promise<string> {
 	const length = Number(resp.headers.get("content-length") ?? 0);
 	if (length > MAX_RESPONSE_BYTES) throw new Error("Response too large");
 
-	const text = await resp.text();
+	const text = await readCapped(resp, MAX_RESPONSE_BYTES);
 	if (!contentType.includes("html")) return `${sourceLine}\n\n${truncate(text)}`; // plain text / markdown / code
 
 	const extracted = htmlToMarkdown(text);
@@ -164,13 +200,26 @@ export class PrivateAddressError extends Error {}
 /** IPv4 dotted quad of an IPv4-mapped IPv6 address (`::ffff:7f00:1` or
  *  `::ffff:127.0.0.1` — the URL parser emits the hex form), else null. */
 function mappedV4(h: string): string | null {
-	const dotted = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+	// Dotted-quad tail: ::ffff:127.0.0.1, ::127.0.0.1, 64:ff9b::192.168.1.1
+	const dotted = h.match(/:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
 	if (dotted) return dotted[1]!;
-	const hex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-	if (!hex) return null;
-	const hi = parseInt(hex[1]!, 16);
-	const lo = parseInt(hex[2]!, 16);
-	return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+	// Two hex groups holding a v4, after a known IPv4-embedding prefix (audit
+	// W2, 2026-10-26): ::ffff:7f00:1 (mapped), ::7f00:1 (compat),
+	// ::ffff:0:7f00:1 (translated), 64:ff9b::7f00:1 (NAT64).
+	const hex = h.match(/^(?:::ffff:|::ffff:0:|::|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+	if (hex) {
+		const hi = parseInt(hex[1]!, 16);
+		const lo = parseInt(hex[2]!, 16);
+		return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+	}
+	// 6to4: 2002:AABB:CCDD::/48 embeds the v4 AABBCCDD.
+	const sixToFour = h.match(/^2002:([0-9a-f]{1,4}):([0-9a-f]{1,4})\b/);
+	if (sixToFour) {
+		const hi = parseInt(sixToFour[1]!, 16);
+		const lo = parseInt(sixToFour[2]!, 16);
+		return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+	}
+	return null;
 }
 
 /** Loopback, private, link-local, multicast and local-name hosts — literal
@@ -187,7 +236,8 @@ export function isPrivateHost(hostname: string): boolean {
 	}
 	// IPv6 prefixes only on IPv6 literals — `fcc.gov` / `fdroid.org` are names.
 	if (!h.includes(":")) return false;
-	return h === "::1" || h === "::" || /^fe[89ab]/.test(h) || /^f[cd]/.test(h) || h.startsWith("ff");
+	// ULA fc00::/7, link-local fe80::/10, site-local fec0::/10, multicast ff.
+	return h === "::1" || h === "::" || /^fe[89abcdef]/.test(h) || /^f[cd]/.test(h) || h.startsWith("ff");
 }
 
 /** Refuse a URL whose host is private — literally, or by what its name

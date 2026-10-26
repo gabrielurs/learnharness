@@ -57,6 +57,14 @@ describe("spoken confidence", () => {
 		assert.equal(spokenConfidence("1234% seguro"), null);
 		assert.equal(spokenConfidence("99,5% seguro"), null);
 		assert.equal(spokenConfidence("tengo confianza de tenis"), null);
+		// audit B6 (2026-10-26): an answer number is never read as confidence.
+		assert.equal(spokenConfidence("sure of 2."), null);
+		assert.equal(spokenConfidence("seguro que es 20"), null);
+		assert.equal(spokenConfidence("la respuesta es 42, seguro"), null);
+		assert.equal(spokenConfidence("x = 25% seguro de vida"), null);
+		assert.equal(spokenConfidence("estoy seguro de 3 cosas"), 90);
+		// a confidence NOUN still takes a bare number:
+		assert.equal(spokenConfidence("confianza de 90"), 90);
 		assert.equal(spokenConfidence("no estoy 100% seguro"), 30);
 		assert.equal(spokenConfidence("no estoy cien por cien seguro"), 30);
 		assert.equal(spokenConfidence("I'm not 100% sure"), 30);

@@ -25,6 +25,13 @@ describe("web_fetch guard: literal hosts", () => {
 		for (const h of ["fcc.gov", "fdroid.org", "fda.gov", "fc2.com"]) assert.equal(isPrivateHost(h), false, h);
 	});
 
+	it("refuses IPv4 embedded in IPv6 forms, keeps public IPv6 (audit W2, 2026-10-26)", () => {
+		for (const h of ["[::7f00:1]", "[::ffff:0:7f00:1]", "[64:ff9b::7f00:1]", "[64:ff9b::192.168.1.1]", "[2002:7f00:1::]", "[2002:c0a8:101::1]", "[fec0::1]"]) {
+			assert.equal(isPrivateHost(h), true, h);
+		}
+		for (const h of ["[2001:4860:4860::8888]", "[2606:4700:4700::1111]", "[64:ff9b::8.8.8.8]"]) assert.equal(isPrivateHost(h), false, h);
+	});
+
 	it("execute refuses the mapped and trailing-dot forms without fetching", async () => {
 		assert.match(await fetchText("http://[::ffff:127.0.0.1]:3000/api/activity"), /refused/);
 		assert.match(await fetchText("http://localhost.:3000/api/activity"), /refused/);

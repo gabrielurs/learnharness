@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -19,7 +19,7 @@ import {
 	type Usage,
 } from "@earendil-works/pi-ai";
 import { QUESTION_TOOLS } from "../../core/pending.ts";
-import { SEND_TO_USER_TOOL } from "../../core/native-messages.ts";
+import { SEND_TO_USER_TOOL, failedOutputCallIds, type LhMessage } from "../../core/native-messages.ts";
 import { MCP_SERVER_SOURCE } from "./mcp-server.ts";
 import { BRIDGE_MCP_SERVER, BRIDGE_TOOL_PREFIX, renderBridgePrompt } from "./transcript.ts";
 
@@ -171,15 +171,31 @@ const FAKE_RESULT = /<(?:\w+:)?function_results>|<tool_result[\s>]|<tool_call_er
 const FAKE_RESULT_G = new RegExp(FAKE_RESULT.source, "g");
 
 /** Is `at` inside a fenced code block? Fences are ``` or ~~~ runs (3+)
- *  opening a line; a fence closes on the same character, at least as long. */
+ *  opening a line, after optional blockquote/list container prefixes
+ *  (audit B3, 2026-10-26); a fence closes on the same character, at least
+ *  as long. */
 function insideFence(text: string, at: number): boolean {
 	let open: string | null = null;
-	for (const m of text.slice(0, at).matchAll(/^[ \t]{0,3}(`{3,}|~{3,})/gm)) {
+	for (const m of text.slice(0, at).matchAll(/^[ \t>]*(?:[-*+]\s+|\d+[.)]\s+)?[ \t]*(`{3,}|~{3,})/gm)) {
 		const run = m[1]!;
 		if (open === null) open = run;
 		else if (run[0] === open[0] && run.length >= open.length) open = null;
 	}
 	return open !== null;
+}
+
+/** Is `at` inside an inline `code span`? Count backtick runs on the line
+ *  before `at`: an odd number of equal-length runs leaves one open (audit
+ *  B3, 2026-10-26 — markup inside inline code is prose, not a call). */
+function insideInlineCode(text: string, at: number): boolean {
+	const lineStart = text.lastIndexOf("\n", at - 1) + 1;
+	const open = new Map<number, number>();
+	for (const m of text.slice(lineStart, at).matchAll(/`+/g)) {
+		const len = m[0].length;
+		open.set(len, (open.get(len) ?? 0) + 1);
+	}
+	for (const count of open.values()) if (count % 2 === 1) return true;
+	return false;
 }
 
 const atLineStart = (text: string, at: number) => !text.slice(text.lastIndexOf("\n", at - 1) + 1, at).trim();
@@ -191,7 +207,7 @@ const atLineStart = (text: string, at: number) => !text.slice(text.lastIndexOf("
 function markupAt(text: string, re: RegExp, from: number, lineStartOnly: (match: string) => boolean = () => false): number {
 	re.lastIndex = from;
 	for (let m = re.exec(text); m; m = re.exec(text)) {
-		if (insideFence(text, m.index)) continue;
+		if (insideFence(text, m.index) || insideInlineCode(text, m.index)) continue;
 		if (lineStartOnly(m[0]) && !atLineStart(text, m.index)) continue;
 		return m.index;
 	}
@@ -443,7 +459,11 @@ export class BridgeAssembler {
 		const parsed = parseLeakedCalls(markup);
 		const served = (name: string) => !this.served || this.served.has(name);
 		const calls = parsed.filter((c) => served(c.name));
-		const example = calls.length === 0 && (parsed.length > 0 || block.midLine);
+		// The opening tag's tool name, even when the invoke never closed — an
+		// INCOMPLETE mention of a tool the app doesn't serve is prose, not a
+		// failed call (audit B4, 2026-10-26).
+		const openName = markup.match(/<(?:\w+:)?invoke name="([^"]+)"/)?.[1]?.replace(BRIDGE_TOOL_PREFIX, "");
+		const example = calls.length === 0 && (parsed.length > 0 || block.midLine || (openName !== undefined && !served(openName)));
 		if (example && atStop) {
 			this.giveBack(block, content, held);
 			this.push({ type: "text_end", contentIndex: block.index, content: content.text, partial: this.output });
@@ -490,22 +510,20 @@ export class BridgeAssembler {
 	}
 
 	private finish(): void {
-		// An EMPTY reply — no text, no call (seen live 2026-10-26: a stop with
-		// 0 output tokens right after a probe answer) — would end the turn
-		// silently with nothing on screen; fail it so the learner gets Retry.
-		// After send_to_user delivered this step's message, a closing reply's
-		// ordinary text is not delivery (upstream 0.3.8's contract) — seen live
-		// through the bridge as "El mensaje ya fue entregado." / "o_O". Keep it
-		// as thinking (recorded, folded) instead of showing it as prose.
-		// A verbatim re-send of an already delivered message (seen live: 1 in
-		// 2 bridged closing steps) would show it twice — drop it.
+		// The view (userFacingTextOf) shows ordinary text AND send_to_user
+		// messages to the learner, so the bridge must NOT fold text into
+		// thinking — that hid real answers (audit B1, 2026-10-26). It only
+		// drops a verbatim re-send of a message already delivered since the
+		// learner last spoke, which the view would otherwise show twice.
 		const seen = new Set(this.delivered.map(normalizeDelivery));
 		this.output.content = this.output.content.filter(
 			(c) => !(c.type === "toolCall" && c.name === SEND_TO_USER_TOOL && seen.has(normalizeDelivery(String(c.arguments.message ?? "")))),
 		);
-		if (this.delivered.length > 0 && !this.output.content.some((c) => c.type === "toolCall")) {
-			this.output.content = this.output.content.map((c) => (c.type === "text" ? ({ type: "thinking", thinking: c.text } as ThinkingContent) : c));
-		}
+		// An EMPTY reply — no text, no call (seen live 2026-10-26: a stop with
+		// 0 output tokens right after a probe answer) — would end the turn
+		// silently with nothing on screen; fail it so the learner gets Retry.
+		// But a reply that only CLOSED after delivering via send_to_user this
+		// turn has its message on screen already, so empty is fine there.
 		const said = this.output.content.some((c) => (c.type === "text" && c.text.trim()) || c.type === "toolCall");
 		if (!said && this.delivered.length === 0 && this.stopReason !== "max_tokens") {
 			this.output.usage = toPiUsage(this.rawUsage);
@@ -546,10 +564,24 @@ export class BridgeAssembler {
 	}
 }
 
-/** Where bridged calls run: an empty dir, so the CLI finds no CLAUDE.md. */
+let scratchSwept = false;
+
+/** Where bridged calls run: an empty dir, so the CLI finds no CLAUDE.md.
+ *  Each call dir holds the rendered system prompt (learner context), so the
+ *  root is private (0700) and stale call dirs left by killed runs are swept
+ *  once per process (audit R3, 2026-10-26). */
 function scratchRoot(): string {
 	const root = path.join(tmpdir(), "learnharness-claude-code");
-	mkdirSync(root, { recursive: true });
+	mkdirSync(root, { recursive: true, mode: 0o700 });
+	if (!scratchSwept) {
+		scratchSwept = true;
+		try {
+			for (const name of readdirSync(root)) {
+				if (name.startsWith("call-")) rmSync(path.join(root, name), { recursive: true, force: true });
+			}
+			chmodSync(root, 0o700);
+		} catch {}
+	}
 	return root;
 }
 
@@ -579,13 +611,18 @@ function writeCallFiles(dir: string, systemPrompt: string, tools: readonly Tool[
  *  (a user message or a question answer)? Then an empty reply just ends
  *  the turn; otherwise it is the silent-turn failure (exported for tests). */
 export function deliveredSinceLearner(context: TranscriptContext): string[] {
+	// A send_to_user whose result is an error (or whose generation failed)
+	// never reached the learner (audit B2, 2026-10-26) — skip it.
+	const failed = failedOutputCallIds(context.messages as readonly unknown[] as readonly LhMessage[]);
 	const delivered: string[] = [];
 	for (let i = context.messages.length - 1; i >= 0; i--) {
 		const m = context.messages[i]!;
 		if (m.role === "user") break;
 		if (m.role === "toolResult" && (QUESTION_TOOLS as readonly string[]).includes(m.toolName)) break;
 		if (m.role === "assistant") {
-			for (const c of m.content) if (c.type === "toolCall" && c.name === SEND_TO_USER_TOOL) delivered.push(String(c.arguments.message ?? ""));
+			for (const c of m.content) {
+				if (c.type === "toolCall" && c.name === SEND_TO_USER_TOOL && !failed.has(c.id)) delivered.push(String(c.arguments.message ?? ""));
+			}
 		}
 	}
 	return delivered;

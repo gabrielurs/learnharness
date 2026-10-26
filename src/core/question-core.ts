@@ -616,7 +616,13 @@ const words = (o: Record<string, number>) => Object.keys(o).join("|");
 // Whole tokens only: "1234%" is not "34%", "tenis" is not "ten".
 const NUM = `(?<!\\bpor\\s{1,3})(?<![\\d.,])(\\d{1,3}(?![\\d.,]?\\d)|(?:${words(TENS)})(?:\\s+y\\s+|[\\s-])(?:${words(UNITS)})\\b|(?:${words(TENS)})\\b)`;
 const PCT_REQ = `\\s*(?:%|por\\s*ciento|por\\s*cien|percent|per\\s*cent)`;
-const SURE = `(?:segur[oa]s?|confianza|confiado|confiada|convencid[oa]|sure|certain|confident|confidence)`;
+/** Confidence NOUNS take a bare number ("confianza de 90"); adjectives do
+ *  not, so "estoy seguro de 20" is the answer, not confidence (audit B6). */
+const SURE_NOUN = `(?:confianza|confidence)`;
+const SURE_ADJ = `(?:segur[oa]s?|confiado|confiada|convencid[oa]|sure|certain|confident)`;
+const SURE = `(?:${SURE_NOUN}|${SURE_ADJ})`;
+/** "seguro de vida/médico/de hogar/de coche" is insurance, not confidence. */
+const NOT_INSURANCE = `(?!\\s+(?:de\\s+)?(?:vida|m[eé]dico|dental|hogar|coche|auto|viaje|de\\s+vida))`;
 /** Statistics, not the learner: "95% confidence interval", "intervalo /
  *  nivel de confianza del 95%". */
 const NOT_STATS_AFTER = `(?!\\s+intervals?\\b|\\s+levels?\\b)`;
@@ -633,9 +639,13 @@ const CLAUSE_END = `(?=\\s*(?:[.,;:!?)]|$))`;
 /** Numeric forms: "<n>% (de) seguro/confianza" (a percent, or "estoy <n>
  *  seguro"), "seguro al <n>%", "confianza (de) <n>". */
 const NUMERIC_PATTERNS: RegExp[] = [
-	new RegExp(`(?<!\\b(?:intervalos?|nivel|niveles)\\s+(?:de|del|al)\\s+)${NOT_NEGATED}${NUM}${PCT_REQ}\\s+(?:de\\s+)?${SURE}${NOT_STATS_AFTER}`, "gi"),
+	new RegExp(`(?<!\\b(?:intervalos?|nivel|niveles)\\s+(?:de|del|al)\\s+)${NOT_NEGATED}${NUM}${PCT_REQ}\\s+(?:de\\s+)?${SURE}${NOT_INSURANCE}${NOT_STATS_AFTER}`, "gi"),
 	new RegExp(`(?<=\\b(?:estoy|estar|soy|i'?m|am)\\s+(?:un\\s+|al\\s+)?)${NUM}\\s+${SURE}`, "gi"),
-	new RegExp(`${NOT_STATS_BEFORE}${NOT_NEGATED}${SURE}\\s+${BRIDGE}${NUM}(?:${PCT_REQ}|${CLAUSE_END})`, "gi"),
+	// A confidence word then a number WITH a percent — any confidence word.
+	new RegExp(`${NOT_STATS_BEFORE}${NOT_NEGATED}${SURE}${NOT_INSURANCE}\\s+${BRIDGE}${NUM}${PCT_REQ}`, "gi"),
+	// A confidence NOUN then a bare number ("confianza de 90") — never an
+	// adjective, so "seguro de 20" stays the answer (audit B6, 2026-10-26).
+	new RegExp(`${NOT_STATS_BEFORE}${NOT_NEGATED}${SURE_NOUN}\\s+${BRIDGE}${NUM}${CLAUSE_END}`, "gi"),
 ];
 /** Worded forms → a probability; negatives listed before the plain
  *  "seguro" so "no estoy seguro" never reads as sure. */

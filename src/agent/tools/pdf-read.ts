@@ -30,6 +30,40 @@ const FETCH_TIMEOUT_MS = 60_000;
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
 /** The pdf-reader doctrine's size classes, by page count. */
+/** Read a response body, aborting past `max` bytes (audit W1, 2026-10-26).
+ *  Falls back to arrayBuffer() when there is no readable stream (test stubs). */
+async function readCappedBytes(resp: Response, max: number): Promise<Uint8Array> {
+	const reader = resp.body?.getReader();
+	if (!reader) {
+		const buf = new Uint8Array(await resp.arrayBuffer());
+		if (buf.length > max) throw new Error("PDF too large (over 25 MB)");
+		return buf;
+	}
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > max) {
+				await reader.cancel().catch(() => {});
+				throw new Error("PDF too large (over 25 MB)");
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock?.();
+	}
+	const out = new Uint8Array(total);
+	let at = 0;
+	for (const c of chunks) {
+		out.set(c, at);
+		at += c.byteLength;
+	}
+	return out;
+}
+
 function sizeClass(pageCount: number): "short" | "medium" | "long" {
 	if (pageCount <= 10) return "short";
 	if (pageCount <= 40) return "medium";
@@ -127,9 +161,10 @@ export function createPdfReadTools(dir: string): Record<string, AgentTool<any>> 
 					}
 					const declared = Number(resp.headers.get("content-length") ?? 0);
 					if (declared > MAX_PDF_BYTES) throw new Error("PDF too large (over 25 MB)");
-					const bytes = new Uint8Array(await resp.arrayBuffer());
+					// Cap the body as it streams (audit W1, 2026-10-26): a chunked
+					// response with no Content-Length skipped the declared check.
+					const bytes = await readCappedBytes(resp, MAX_PDF_BYTES);
 					if (bytes.length === 0) throw new Error("Empty response");
-					if (bytes.length > MAX_PDF_BYTES) throw new Error("PDF too large (over 25 MB)");
 					const filePath = path.join(dir, pdfFileName(url));
 					await fs.writeFile(filePath, bytes);
 					try {

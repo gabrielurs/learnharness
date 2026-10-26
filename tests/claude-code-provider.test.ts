@@ -277,6 +277,19 @@ describe("claude-code CLI seam", () => {
 		const mention = run(['Claude usa etiquetas como <invoke name="x"> internamente, y sigo.']);
 		assert.notEqual(mention.stopReason, "error");
 		assert.match(texts(mention), /y sigo\.$/);
+		// B3 (2026-10-26): markup inside inline code or a container-indented
+		// fence is prose, not a call.
+		const inlineCode = run(["Escribe `" + quiz + "` así."]);
+		assert.deepEqual(callNames(inlineCode), []);
+		assert.match(texts(inlineCode), /^Escribe `/);
+		const listFence = run(["Ejemplo:\n   ```\n   " + quiz + "\n   ```\n fin"]);
+		assert.deepEqual(callNames(listFence), []);
+		const quoteFence = run(["> ```\n> " + quiz + "\n> ```"]);
+		assert.deepEqual(callNames(quoteFence), []);
+		// B4 (2026-10-26): an incomplete mention of an UNSERVED tool is prose.
+		const incompleteUnserved = run(['Las herramientas como <invoke name="get_weather"> se usan así.']);
+		assert.notEqual(incompleteUnserved.stopReason, "error");
+		assert.match(texts(incompleteUnserved), /se usan así\.$/);
 	});
 
 	it("an empty reply fails the turn so the learner gets Retry (2026-10-26)", () => {
@@ -302,22 +315,35 @@ describe("claude-code CLI seam", () => {
 		asm.feed(se({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } }));
 		asm.feed(se({ type: "message_stop" }));
 		assert.equal(asm.output.stopReason, "stop");
-		// Closing prose after a delivery is folded into thinking, never shown.
+		// A plain-text reply after a delivery is KEPT as text (the view shows
+		// ordinary text too — audit B1): never folded into thinking.
 		const chatty = new BridgeAssembler({ api: "claude-code-cli", provider: "claude-code", id: "x" }, () => {}, undefined, ["hola"]);
 		chatty.feed(se({ type: "message_start", message: { usage: {} } }));
 		chatty.feed(se({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
-		chatty.feed(se({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "El mensaje ya fue entregado." } }));
+		chatty.feed(se({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "La respuesta completa a tu pregunta." } }));
 		chatty.feed(se({ type: "content_block_stop", index: 0 }));
 		chatty.feed(se({ type: "message_stop" }));
 		assert.equal(chatty.output.stopReason, "stop");
-		assert.deepEqual(chatty.output.content.map((c) => c.type), ["thinking"]);
-		const a = (name: string) => ({ role: "assistant", content: [{ type: "toolCall", id: name, name, arguments: {} }] });
+		assert.deepEqual(chatty.output.content.map((c) => c.type), ["text"]);
+		const a = (name: string, message?: string) => ({ role: "assistant", content: [{ type: "toolCall", id: name, name, arguments: message ? { message } : {} }] });
 		const r = (name: string) => ({ role: "toolResult", toolCallId: name, toolName: name, content: [], isError: false });
 		const ctx = (...messages: object[]) => ({ messages }) as never;
 		assert.deepEqual(deliveredSinceLearner(ctx({ role: "user", content: "hola" }, a("send_to_user"), r("send_to_user"))), [""]);
 		assert.deepEqual(deliveredSinceLearner(ctx(a("send_to_user"), r("send_to_user"), { role: "user", content: "sigue" })), []);
 		// A question answer is the learner speaking: an earlier delivery doesn't count.
 		assert.deepEqual(deliveredSinceLearner(ctx(a("send_to_user"), r("send_to_user"), a("probe"), r("probe"))), []);
+		// B2: a send_to_user whose result is an error never reached the learner.
+		const rErr = (name: string) => ({ role: "toolResult", toolCallId: name, toolName: name, content: [], isError: true });
+		assert.deepEqual(deliveredSinceLearner(ctx({ role: "user", content: "hola" }, a("send_to_user", "x"), rErr("send_to_user"))), []);
+		// B1: a plain-text answer after a send_to_user + tool-call step is kept.
+		const mixed = { role: "assistant", content: [{ type: "toolCall", id: "s", name: "send_to_user", arguments: { message: "Voy a leerla." } }, { type: "toolCall", id: "w", name: "web_fetch", arguments: {} }] };
+		const after = new BridgeAssembler({ api: "claude-code-cli", provider: "claude-code", id: "x" }, () => {}, new Set(["send_to_user", "web_fetch"]), deliveredSinceLearner(ctx({ role: "user", content: "lee" }, mixed, r("s"), r("w"))));
+		after.feed(se({ type: "message_start", message: { usage: {} } }));
+		after.feed(se({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
+		after.feed(se({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "La derivada es la pendiente de la tangente." } }));
+		after.feed(se({ type: "content_block_stop", index: 0 }));
+		after.feed(se({ type: "message_stop" }));
+		assert.deepEqual(after.output.content.map((c) => c.type), ["text"], "the real answer is shown, not folded");
 		// A verbatim re-send of the delivered message is dropped; the turn just ends.
 		const resend = new BridgeAssembler({ api: "claude-code-cli", provider: "claude-code", id: "x" }, () => {}, undefined, ["La derivada es  la pendiente."]);
 		resend.feed(se({ type: "message_start", message: { usage: {} } }));
