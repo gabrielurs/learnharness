@@ -1,7 +1,4 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { CODE_LIMITS, outputsMatch, type CodeLanguage, type CodeRunCase, type CodeRunRequest, type CodeRunResult } from "../core/contracts/code.ts";
 
 /**
@@ -185,13 +182,11 @@ const DOCKER_RUN_FLAGS = SANDBOX_RUN_FLAGS;
 export async function runCodeInDocker(request: CodeRunRequest): Promise<CodeRunResult> {
 	await ensureImage();
 	const { file, std } = COMPILE[request.language];
-	const dir = mkdtempSync(path.join(tmpdir(), "lh-docker-"));
-	writeFileSync(path.join(dir, file), request.source);
 	let containerId: string | undefined;
 	try {
 		const started = await run(
 			"docker",
-			["run", "-d", "--rm", ...DOCKER_RUN_FLAGS, "-v", `${dir}:/src:ro`, "--entrypoint", "sleep", IMAGE, String(Math.ceil(CONTAINER_WALL_MS / 1000))],
+			["run", "-d", "--rm", ...DOCKER_RUN_FLAGS, "--entrypoint", "sleep", IMAGE, String(Math.ceil(CONTAINER_WALL_MS / 1000))],
 			{ timeoutMs: 30_000 },
 		);
 		if (started.exitCode !== 0 || !started.stdout.trim()) {
@@ -200,9 +195,18 @@ export async function runCodeInDocker(request: CodeRunRequest): Promise<CodeRunR
 		}
 		containerId = started.stdout.trim();
 
+		// The source goes IN over stdin, never a bind mount (fork, 2026-10-26):
+		// a host bind mount's uid can't be traversed by the container's nobody
+		// on real Linux, and piping keeps nothing of the host in the container.
+		const written = await run("docker", ["exec", "-i", containerId, "sh", "-c", `cat > /work/${file}`], { stdin: request.source, timeoutMs: 15_000 });
+		if (written.exitCode !== 0 && (await execHitDockerFailure(written.exitCode))) {
+			resetDockerAvailability();
+			throw new DockerImageMissingError("the Docker daemon became unreachable while writing the source");
+		}
+
 		const compiled = await run(
 			"docker",
-			["exec", containerId, COMPILE[request.language].bin, std, ...COMMON_FLAGS, "-o", "/work/main", `/src/${file}`],
+			["exec", containerId, COMPILE[request.language].bin, std, ...COMMON_FLAGS, "-o", "/work/main", `/work/${file}`],
 			{ timeoutMs: CODE_LIMITS.compileTimeoutMs + 5_000 },
 		);
 		// The daemon vanished between start and exec (quit mid-run): fall back.
@@ -258,6 +262,5 @@ export async function runCodeInDocker(request: CodeRunRequest): Promise<CodeRunR
 		return { compile, cases };
 	} finally {
 		if (containerId) void execFile("docker", ["rm", "-f", containerId], () => {});
-		rmSync(dir, { recursive: true, force: true });
 	}
 }

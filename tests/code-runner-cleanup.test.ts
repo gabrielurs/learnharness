@@ -16,20 +16,26 @@ const alive = (pid: number) => {
 	}
 };
 
-const FORK_ORPHAN = `#include <stdio.h>
+const FORK_ORPHAN = `#define _DEFAULT_SOURCE
+#include <stdio.h>
 #include <unistd.h>
+#include <sys/types.h>
 int main(void){ pid_t p = fork(); if (p == 0) { close(1); close(2); for(;;) sleep(1); }
   printf("%d\\n", (int)p); return 0; }
 `;
 
-const SETSID_HOLDER = `#include <stdio.h>
+const SETSID_HOLDER = `#define _DEFAULT_SOURCE
+#include <stdio.h>
 #include <unistd.h>
+#include <sys/types.h>
 int main(void){ pid_t p = fork(); if (p == 0) { setsid(); sleep(7); return 0; }
   printf("%d\\n", (int)p); fflush(stdout); return 0; }
 `;
 
-const CHMOD_DIR = `#include <stdio.h>
+const CHMOD_DIR = `#define _DEFAULT_SOURCE
+#include <stdio.h>
 #include <sys/stat.h>
+#include <unistd.h>
 int main(void){ mkdir("d", 0700); FILE *f = fopen("d/x", "w"); if (f) fclose(f); chmod("d", 0); puts("ok"); return 0; }
 `;
 
