@@ -606,8 +606,6 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 	const startBrowser = useCallback(
 		(gen: number, Recognition: SpeechRecognitionCtor) => {
 			recogStoppingRef.current = false;
-			const t0 = performance.now();
-			const dbg = (...a: unknown[]) => console.info(`[dictation +${((performance.now() - t0) / 1000).toFixed(1)}s]`, ...a);
 
 			const spawn = (): boolean => {
 				const recog = new Recognition();
@@ -630,7 +628,6 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 					if (gen !== genRef.current || recogStoppingRef.current || recogRef.current !== recog) return;
 					const t = performance.now();
 					if (shouldRotate(t - listeningSince, t - lastResultAt)) {
-						dbg("rotate");
 						setPhase("connecting"); // the renewal gap captures nothing
 						try {
 							recog.stop(); // → end → commit → next segment
@@ -649,15 +646,9 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 				};
 				const hasAudioStart = "onaudiostart" in recog;
 				recog.onstart = () => {
-					dbg("segment start");
 					if (!hasAudioStart) listening();
 				};
-				if (hasAudioStart) {
-					recog.onaudiostart = () => {
-						dbg("audio start");
-						listening();
-					};
-				}
+				if (hasAudioStart) recog.onaudiostart = () => listening();
 				recog.onresult = (ev) => {
 					if (gen !== genRef.current) return;
 					// A result proves capture: light the dot even if this engine
@@ -665,10 +656,8 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 					listening();
 					lastResultAt = performance.now();
 					for (let i = ev.resultIndex; i < ev.results.length; i++) slots[i] = ev.results[i]![0]?.transcript ?? "";
-					dbg("result", { slots: slots.length, chars: slots.join(" ").length });
 				};
 				recog.onerror = (ev) => {
-					dbg("error", ev.error);
 					if (gen !== genRef.current) return;
 					const msg = speechErrorMessage(ev.error);
 					if (!msg) return; // silence / our own abort — the end handler decides
@@ -677,7 +666,6 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 					cleanup();
 				};
 				recog.onend = () => {
-					dbg("segment end", { stopping: recogStoppingRef.current });
 					if (gen !== genRef.current || recogRef.current !== recog) return;
 					commit();
 					// Our stop: every segment has landed — finalize.
@@ -697,8 +685,7 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 				try {
 					recog.start();
 					return true;
-				} catch (e) {
-					dbg("segment start failed", e);
+				} catch {
 					recogRef.current = null;
 					return false;
 				}

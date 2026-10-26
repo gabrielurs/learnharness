@@ -256,8 +256,9 @@ export class BridgeAssembler {
 		 *  them is an example, not a call. Absent → any name counts. */
 		private readonly served?: ReadonlySet<string>,
 		/** This step's prose already went out through send_to_user (upstream
-		 *  0.3.8): an empty closing reply is the documented way to end. */
-		private readonly delivered = false,
+		 *  0.3.8): an empty closing reply is the documented way to end. The
+		 *  delivered messages, to drop a verbatim re-send. */
+		private readonly delivered: readonly string[] = [],
 	) {
 		this.output = emptyMessage(model);
 	}
@@ -492,8 +493,21 @@ export class BridgeAssembler {
 		// An EMPTY reply — no text, no call (seen live 2026-10-26: a stop with
 		// 0 output tokens right after a probe answer) — would end the turn
 		// silently with nothing on screen; fail it so the learner gets Retry.
+		// After send_to_user delivered this step's message, a closing reply's
+		// ordinary text is not delivery (upstream 0.3.8's contract) — seen live
+		// through the bridge as "El mensaje ya fue entregado." / "o_O". Keep it
+		// as thinking (recorded, folded) instead of showing it as prose.
+		// A verbatim re-send of an already delivered message (seen live: 1 in
+		// 2 bridged closing steps) would show it twice — drop it.
+		const seen = new Set(this.delivered.map(normalizeDelivery));
+		this.output.content = this.output.content.filter(
+			(c) => !(c.type === "toolCall" && c.name === SEND_TO_USER_TOOL && seen.has(normalizeDelivery(String(c.arguments.message ?? "")))),
+		);
+		if (this.delivered.length > 0 && !this.output.content.some((c) => c.type === "toolCall")) {
+			this.output.content = this.output.content.map((c) => (c.type === "text" ? ({ type: "thinking", thinking: c.text } as ThinkingContent) : c));
+		}
 		const said = this.output.content.some((c) => (c.type === "text" && c.text.trim()) || c.type === "toolCall");
-		if (!said && !this.delivered && this.stopReason !== "max_tokens") {
+		if (!said && this.delivered.length === 0 && this.stopReason !== "max_tokens") {
 			this.output.usage = toPiUsage(this.rawUsage);
 			this.fail("error", "Claude returned an empty reply — press Retry");
 			return;
@@ -564,15 +578,20 @@ function writeCallFiles(dir: string, systemPrompt: string, tools: readonly Tool[
 /** Did the model already call send_to_user since the learner last spoke
  *  (a user message or a question answer)? Then an empty reply just ends
  *  the turn; otherwise it is the silent-turn failure (exported for tests). */
-export function deliveredSinceLearner(context: TranscriptContext): boolean {
+export function deliveredSinceLearner(context: TranscriptContext): string[] {
+	const delivered: string[] = [];
 	for (let i = context.messages.length - 1; i >= 0; i--) {
 		const m = context.messages[i]!;
-		if (m.role === "user") return false;
-		if (m.role === "toolResult" && (QUESTION_TOOLS as readonly string[]).includes(m.toolName)) return false;
-		if (m.role === "assistant" && m.content.some((c) => c.type === "toolCall" && c.name === SEND_TO_USER_TOOL)) return true;
+		if (m.role === "user") break;
+		if (m.role === "toolResult" && (QUESTION_TOOLS as readonly string[]).includes(m.toolName)) break;
+		if (m.role === "assistant") {
+			for (const c of m.content) if (c.type === "toolCall" && c.name === SEND_TO_USER_TOOL) delivered.push(String(c.arguments.message ?? ""));
+		}
 	}
-	return false;
+	return delivered;
 }
+
+const normalizeDelivery = (text: string) => text.replace(/\s+/g, " ").trim();
 
 /** Stream one model request through `claude -p`. */
 export function streamClaudeCode(model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions): AssistantMessageEventStream {
