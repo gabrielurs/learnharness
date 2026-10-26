@@ -8,7 +8,9 @@ export type { WebSearchResult };
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
 import TurndownService from "turndown";
+import { lookup as lookupCallback, type LookupAddress } from "node:dns";
 import { lookup } from "node:dns/promises";
+import { Agent } from "undici";
 import { isIP } from "node:net";
 
 /**
@@ -93,7 +95,15 @@ export async function fetchPublic(url: string, init: RequestInit): Promise<Respo
 	let current = url;
 	for (let hop = 0; ; hop++) {
 		await assertPublicUrl(current);
-		const resp = await fetch(current, { ...init, redirect: "manual" });
+		let resp: Response;
+		try {
+			// The GLOBAL fetch (tests stub it) carrying the pinned dispatcher.
+			resp = await fetch(current, { ...init, redirect: "manual", dispatcher: pinnedAgent } as RequestInit);
+		} catch (err) {
+			const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+			if (cause?.code === PRIVATE_ADDRESS_CODE) throw new PrivateAddressError(cause.message ?? "private address");
+			throw err;
+		}
 		const location = resp.status >= 300 && resp.status < 400 ? resp.headers.get("location") : null;
 		if (!location) return resp;
 		await resp.body?.cancel().catch(() => {});
@@ -197,6 +207,29 @@ async function assertPublicUrl(url: string): Promise<void> {
 	const blocked = addresses.find((a) => isPrivateHost(a.address));
 	if (blocked) throw new PrivateAddressError(`${parsed.hostname} resolves to a local or private-network address (${blocked.address})`);
 }
+
+const PRIVATE_ADDRESS_CODE = "ELH_PRIVATE_ADDRESS";
+
+/** The connection's OWN DNS lookup refuses private answers (fork,
+ *  2026-10-25): the address checked is the address connected to, so a DNS
+ *  answer that flips between assertPublicUrl's lookup and the socket's
+ *  (rebinding with a tiny TTL) can no longer reach the loopback/LAN. */
+const pinnedAgent = new Agent({
+	connect: {
+		lookup(hostname, options, callback) {
+			lookupCallback(hostname, { ...options, all: true }, (err, addresses: LookupAddress[]) => {
+				if (err) return callback(err, "", 4);
+				const blocked = addresses.find((a) => isPrivateHost(a.address));
+				if (blocked) {
+					const refusal = Object.assign(new Error(`${hostname} resolves to a local or private-network address (${blocked.address})`), { code: PRIVATE_ADDRESS_CODE });
+					return callback(refusal, "", 4);
+				}
+				if ((options as { all?: boolean }).all) return (callback as unknown as (e: null, a: LookupAddress[]) => void)(null, addresses);
+				callback(null, addresses[0]!.address, addresses[0]!.family);
+			});
+		},
+	},
+});
 
 // ── tool registry ────────────────────────────────────────────────────────────
 

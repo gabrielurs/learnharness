@@ -1,5 +1,5 @@
-import { spawn, spawnSync } from "node:child_process";
-import { accessSync, constants, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, spawn, spawnSync } from "node:child_process";
+import { accessSync, constants, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -19,8 +19,66 @@ import {
  *
  * Only learner code runs; tests are data (contracts/code.ts). Each run is
  * boxed by: a fresh temp dir (also its cwd), a wall-clock timeout that
- * kills the whole process group, an output cap, and a minimal env.
+ * kills the whole process group, an output cap, and a minimal env — and on
+ * macOS an OS sandbox plus a memory watchdog (runSandboxed, fork,
+ * 2026-10-25).
  */
+
+/**
+ * The macOS sandbox for a learner binary (sandbox-exec; deprecated but
+ * shipped and working on macOS 26). Denied: fork/exec of anything but the
+ * binary itself (no fork bombs, no escaped children), writes outside the
+ * run dir, every network operation, and reads under the learner's home.
+ * Allowed: reading the system (dyld, the sanitizer runtime), the console
+ * logger UBSan reports through, and signalling itself (abort()).
+ */
+const SANDBOX_PROFILE = [
+	"(version 1)",
+	"(deny default)",
+	'(allow process-exec (literal (param "BIN")))',
+	"(allow file-read*)",
+	'(deny file-read* (subpath (param "HOME")))',
+	'(allow file-write* (subpath (param "DIR")) (literal "/dev/null"))',
+	"(allow sysctl-read)",
+	'(allow mach-lookup (global-name "com.apple.system.logger"))',
+	"(allow signal (target self))",
+].join("");
+const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
+/** Resident memory past this kills the run (macOS ignores RLIMIT_AS). */
+const RUN_MEMORY_LIMIT_MB = 512;
+const MEMORY_POLL_MS = 100;
+
+function sandboxAvailable(): boolean {
+	if (process.platform !== "darwin") return false;
+	try {
+		accessSync(SANDBOX_EXEC, constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** The command that runs a learner binary: sandboxed on macOS (the sandbox
+ *  applies, then exec — same pid, so the group kill still holds); as-is
+ *  elsewhere. */
+function learnerCommand(bin: string, dir: string): { cmd: string; args: string[]; memoryLimitMb?: number } {
+	if (!sandboxAvailable()) return { cmd: bin, args: [] };
+	// The profile matches REAL paths: the temp dir lives under /var, a
+	// symlink to /private/var.
+	const real = (p: string) => {
+		try {
+			return realpathSync(p);
+		} catch {
+			return p;
+		}
+	};
+	const [realBin, realDir, home] = [real(bin), real(dir), real(process.env.HOME ?? "/Users")];
+	return {
+		cmd: SANDBOX_EXEC,
+		args: ["-p", SANDBOX_PROFILE, "-D", `DIR=${realDir}`, "-D", `BIN=${realBin}`, "-D", `HOME=${home}`, realBin],
+		memoryLimitMb: RUN_MEMORY_LIMIT_MB,
+	};
+}
 
 const COMPILERS: Record<CodeLanguage, { bin: string; file: string; flags: string[] }> = {
 	c: { bin: "clang", file: "main.c", flags: ["-std=c17"] },
@@ -44,7 +102,8 @@ function sanitizers(compiler: string, env: Record<string, string>): Promise<stri
 			writeFileSync(path.join(dir, "probe.c"), "int main(void){return 0;}\n");
 			const built = await exec(compiler, ["-fsanitize=address", "-o", "probe", "probe.c"], { cwd: dir, stdin: "", timeoutMs: CODE_LIMITS.compileTimeoutMs, env });
 			if (built.exitCode !== 0) return ["undefined"];
-			const ran = await exec(path.join(dir, "probe"), [], { cwd: dir, stdin: "", timeoutMs: 3_000, env });
+			const probe = learnerCommand(path.join(dir, "probe"), dir);
+			const ran = await exec(probe.cmd, probe.args, { cwd: dir, stdin: "", timeoutMs: 3_000, env, memoryLimitMb: probe.memoryLimitMb });
 			return ran.exitCode === 0 && !ran.timedOut ? ["address", "undefined"] : ["undefined"];
 		} finally {
 			killStragglers(dir);
@@ -102,7 +161,11 @@ const DRAIN_GRACE_MS = 200;
 /** Run one process with stdin, a timeout and an output cap. The whole
  *  process group is killed when the main process exits too (fork, 2026-10-25
  *  audit): a fork()ed child used to outlive the run. */
-function exec(bin: string, args: string[], opts: { cwd: string; stdin: string; timeoutMs: number; env: Record<string, string> }): Promise<ExecResult> {
+function exec(
+	bin: string,
+	args: string[],
+	opts: { cwd: string; stdin: string; timeoutMs: number; env: Record<string, string>; memoryLimitMb?: number },
+): Promise<ExecResult> {
 	return new Promise((resolve) => {
 		const t0 = performance.now();
 		const child = spawn(bin, args, { cwd: opts.cwd, env: opts.env as NodeJS.ProcessEnv, stdio: ["pipe", "pipe", "pipe"], detached: true });
@@ -112,6 +175,7 @@ function exec(bin: string, args: string[], opts: { cwd: string; stdin: string; t
 		let timedOut = false;
 		let done = false;
 		let exited: { code: number | null; signal: string | null } | null = null;
+		let memoryKilled = false;
 		const killGroup = () => {
 			try {
 				if (child.pid) process.kill(-child.pid, "SIGKILL");
@@ -130,6 +194,8 @@ function exec(bin: string, args: string[], opts: { cwd: string; stdin: string; t
 			if (done) return;
 			done = true;
 			clearTimeout(timer);
+			clearInterval(memoryWatch);
+			if (memoryKilled) stderr += `${stderr && !stderr.endsWith("\n") ? "\n" : ""}Killed: memory limit exceeded (${opts.memoryLimitMb} MB)\n`;
 			child.stdout.destroy();
 			child.stderr.destroy();
 			resolve({ stdout, stderr: stderr + (result.error ?? ""), exitCode: result.exitCode, signal: result.signal, timedOut, truncated, ms: Math.round(performance.now() - t0) });
@@ -142,6 +208,21 @@ function exec(bin: string, args: string[], opts: { cwd: string; stdin: string; t
 			timedOut = true;
 			killGroup();
 		}, opts.timeoutMs);
+		// Memory watchdog: poll the process's resident size (KB from ps).
+		// Async (execFile), one probe in flight: the server's event loop never
+		// blocks on it.
+		let polling = false;
+		const memoryWatch = setInterval(() => {
+			if (!opts.memoryLimitMb || !child.pid || exited || polling) return;
+			polling = true;
+			execFile("ps", ["-o", "rss=", "-p", String(child.pid)], (_err, out) => {
+				polling = false;
+				if (!done && !exited && Number(String(out).trim()) > opts.memoryLimitMb! * 1024) {
+					memoryKilled = true;
+					killGroup();
+				}
+			});
+		}, MEMORY_POLL_MS);
 		child.on("error", (err) => finish({ exitCode: null, signal: null, error: String(err.message) }));
 		child.on("exit", (code, signal) => {
 			exited = { code, signal };
@@ -227,7 +308,8 @@ export function runCode(request: CodeRunRequest): Promise<CodeRunResult> {
 			const inputs = request.tests ?? [{ stdin: request.stdin ?? "", expected: undefined as string | undefined }];
 			const cases: CodeRunCase[] = [];
 			for (const test of inputs) {
-				const run = await exec(path.join(dir, "main"), [], { cwd: dir, stdin: test.stdin, timeoutMs: CODE_LIMITS.runTimeoutMs, env });
+				const learner = learnerCommand(path.join(dir, "main"), dir);
+				const run = await exec(learner.cmd, learner.args, { cwd: dir, stdin: test.stdin, timeoutMs: CODE_LIMITS.runTimeoutMs, env, memoryLimitMb: learner.memoryLimitMb });
 				const graded = test.expected !== undefined;
 				cases.push({
 					stdin: test.stdin,

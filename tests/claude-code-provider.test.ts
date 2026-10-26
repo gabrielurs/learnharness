@@ -279,6 +279,23 @@ describe("claude-code CLI seam", () => {
 		assert.match(texts(mention), /y sigo\.$/);
 	});
 
+	it("an empty reply fails the turn so the learner gets Retry (2026-10-26)", () => {
+		const asm = new BridgeAssembler({ api: "claude-code-cli", provider: "claude-code", id: "x" }, () => {});
+		asm.feed(se({ type: "message_start", message: { usage: { input_tokens: 2, output_tokens: 0 } } }));
+		asm.feed(se({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 0 } }));
+		assert.equal(asm.feed(se({ type: "message_stop" })), true);
+		assert.equal(asm.output.stopReason, "error");
+		assert.match(asm.output.errorMessage ?? "", /empty reply.*Retry/);
+		// Whitespace-only text is empty too.
+		const ws = new BridgeAssembler({ api: "claude-code-cli", provider: "claude-code", id: "x" }, () => {});
+		ws.feed(se({ type: "message_start", message: { usage: {} } }));
+		ws.feed(se({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
+		ws.feed(se({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "  \n" } }));
+		ws.feed(se({ type: "content_block_stop", index: 0 }));
+		ws.feed(se({ type: "message_stop" }));
+		assert.equal(ws.output.stopReason, "error");
+	});
+
 	it("caps a runaway response", () => {
 		const asm = new BridgeAssembler({ api: "claude-code-cli", provider: "claude-code", id: "x" }, () => {});
 		asm.feed(se({ type: "message_start", message: { usage: {} } }));

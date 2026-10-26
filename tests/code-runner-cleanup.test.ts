@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { describe, it } from "node:test";
 import { findCompiler, runCode } from "../src/server/code-runner.ts";
 
@@ -32,8 +33,12 @@ const CHMOD_DIR = `#include <stdio.h>
 int main(void){ mkdir("d", 0700); FILE *f = fopen("d/x", "w"); if (f) fclose(f); chmod("d", 0); puts("ok"); return 0; }
 `;
 
+// Under the macOS sandbox fork() is denied outright (code-runner-sandbox
+// test); these cover the unsandboxed path (other platforms).
+const sandboxed = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
+
 describe("code runner cleanup (real clang)", { skip: findCompiler("c") ? false : "no clang on this machine" }, () => {
-	it("kills a fork()ed child when the program exits", async () => {
+	it("kills a fork()ed child when the program exits", { skip: sandboxed ? "fork() is sandbox-denied here" : false }, async () => {
 		const r = await runCode({ language: "c", source: FORK_ORPHAN, stdin: "" });
 		const pid = Number(r.cases[0]!.stdout.trim());
 		assert.ok(pid > 0, r.cases[0]!.stdout);
@@ -41,7 +46,7 @@ describe("code runner cleanup (real clang)", { skip: findCompiler("c") ? false :
 		assert.equal(alive(pid), false, "orphan still running");
 	});
 
-	it("a setsid child holding stdout neither stalls the run nor misgrades it", async () => {
+	it("a setsid child holding stdout neither stalls the run nor misgrades it", { skip: sandboxed ? "fork() is sandbox-denied here" : false }, async () => {
 		const t0 = Date.now();
 		const r = await runCode({ language: "c", source: SETSID_HOLDER, tests: [{ stdin: "", expected: "" }] });
 		const c = r.cases[0]!;

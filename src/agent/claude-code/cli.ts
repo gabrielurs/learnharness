@@ -484,6 +484,15 @@ export class BridgeAssembler {
 	}
 
 	private finish(): void {
+		// An EMPTY reply — no text, no call (seen live 2026-10-26: a stop with
+		// 0 output tokens right after a probe answer) — would end the turn
+		// silently with nothing on screen; fail it so the learner gets Retry.
+		const said = this.output.content.some((c) => (c.type === "text" && c.text.trim()) || c.type === "toolCall");
+		if (!said && this.stopReason !== "max_tokens") {
+			this.output.usage = toPiUsage(this.rawUsage);
+			this.fail("error", "Claude returned an empty reply — press Retry");
+			return;
+		}
 		this.finished = true;
 		this.output.usage = toPiUsage(this.rawUsage);
 		// Ended before the API's final usage (a guard cut the stream): the

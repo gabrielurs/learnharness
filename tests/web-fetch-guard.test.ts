@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { lookup } from "node:dns/promises";
-import { describe, it } from "node:test";
+import dns from "node:dns";
+import { syncBuiltinESMExports } from "node:module";
+import { describe, it, mock } from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -42,6 +44,23 @@ const online = await lookup("httpbin.org").then(() => true, () => false);
 describe("web_fetch guard: DNS and redirects (network)", { skip: online ? false : "offline" }, () => {
 	it("refuses a public name that resolves to loopback", async () => {
 		assert.match(await fetchText("http://127.0.0.1.nip.io:3000/api/activity"), /refused: .*resolves to/);
+	});
+
+	it("a DNS answer that flips to loopback at connect time is refused (rebinding)", async () => {
+		// assertPublicUrl's lookup (dns/promises) sees the real, public answer;
+		// the socket's own lookup is made to answer 127.0.0.1 — the pinned
+		// connection must refuse it instead of connecting.
+		const fake = mock.method(dns, "lookup", (_host: string, _opts: unknown, cb: (e: null, a: { address: string; family: number }[]) => void) =>
+			cb(null, [{ address: "127.0.0.1", family: 4 }]),
+		);
+		syncBuiltinESMExports();
+		try {
+			assert.match(await fetchText("http://example.com:3000/api/activity"), /refused: .*resolves to .*127\.0\.0\.1/);
+		} finally {
+			fake.mock.restore();
+			syncBuiltinESMExports();
+		}
+		assert.match(await fetchText("https://en.wikipedia.org/wiki/Pomodoro_Technique"), /Pomodoro/);
 	});
 
 	it("refuses a public URL that redirects to loopback", async () => {
