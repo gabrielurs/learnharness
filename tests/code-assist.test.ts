@@ -145,8 +145,11 @@ describe("a failed process list sweeps nothing", () => {
 			{ encoding: "utf8" },
 		).trim();
 		const realPath = process.env.PATH;
-		// Only docker's own directory: docker works, `ps` is not found.
-		process.env.PATH = path.dirname(execFileSync("/usr/bin/which", ["docker"], { encoding: "utf8" }).trim());
+		// A PATH holding docker alone: docker works, `ps` is not found (on
+		// Linux both live in /usr/bin, so docker's own dir won't do).
+		const bin = fs.mkdtempSync(path.join(os.tmpdir(), "lh-docker-only-"));
+		fs.symlinkSync(execFileSync("/usr/bin/which", ["docker"], { encoding: "utf8" }).trim(), path.join(bin, "docker"));
+		process.env.PATH = bin;
 		try {
 			(globalThis as { __lhClangd?: { swept?: boolean } }).__lhClangd!.swept = false;
 			await clangdDiagnostics({ docId: "t-nops", language: "c", source: "int main(void){return 0;}\n" });
@@ -155,6 +158,7 @@ describe("a failed process list sweeps nothing", () => {
 			process.env.PATH = realPath;
 			stopClangd();
 			execFileSync("docker", ["rm", "-f", id], { stdio: "ignore" });
+			fs.rmSync(bin, { recursive: true, force: true });
 		}
 	});
 });
