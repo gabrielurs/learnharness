@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, rmSync } from "node:fs";
 import { describe, it } from "node:test";
-import { findCompiler, runCode } from "../src/server/code-runner.ts";
+import { findCompiler, runCodeLocal as runCode } from "../src/server/code-runner.ts";
 
 /** The macOS sandbox around learner binaries (fork, 2026-10-25): no fork,
  *  no writes outside the run dir, no network, no reading $HOME, and a

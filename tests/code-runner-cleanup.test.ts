@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { describe, it } from "node:test";
-import { findCompiler, runCode } from "../src/server/code-runner.ts";
+import { findCompiler, runCodeLocal as runCode } from "../src/server/code-runner.ts";
 
 /** Code runner cleanup (fork, 2026-10-25 audit) — each case misbehaved
  *  before the fix: a surviving fork()ed child, a setsid child holding the

@@ -1,6 +1,7 @@
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { dockerAvailable, runCodeInDocker, DockerImageMissingError } from "./docker-runner.ts";
 import path from "node:path";
 import {
 	CODE_LIMITS,
@@ -275,9 +276,31 @@ async function withSlot<T>(run: () => Promise<T>): Promise<T> {
 
 export class CompilerMissingError extends Error {}
 
-/** Compile `request.source` and run it on each test (or once on stdin). */
+/** Compile `request.source` and run it on each test (or once on stdin).
+ *  Docker when a daemon is reachable (full host isolation — audit R1–R5,
+ *  2026-10-26); the macOS sandbox otherwise. */
 export function runCode(request: CodeRunRequest): Promise<CodeRunResult> {
 	return withSlot(async () => {
+		if (await dockerAvailable()) {
+			try {
+				return await runCodeInDocker(request);
+			} catch (err) {
+				// A reachable daemon that still can't run (no image offline,
+				// start failure) → fall back to the local sandbox rather than
+				// failing the learner's submission.
+				if (!(err instanceof DockerImageMissingError)) throw err;
+				console.warn(`[code-runner] Docker unavailable, using the local sandbox: ${err.message}`);
+			}
+		}
+		return runCodeLocal(request);
+	});
+}
+
+/** The macOS sandbox-exec backend (fallback when Docker is not usable). */
+/** Exported for the fallback-path tests; runCode routes here when Docker
+ *  is unavailable. */
+export function runCodeLocal(request: CodeRunRequest): Promise<CodeRunResult> {
+	return (async () => {
 		const compiler = findCompiler(request.language);
 		if (!compiler) {
 			throw new CompilerMissingError(
@@ -334,5 +357,5 @@ export function runCode(request: CodeRunRequest): Promise<CodeRunResult> {
 			killStragglers(dir);
 			removeRunDir(dir);
 		}
-	});
+	})();
 }
