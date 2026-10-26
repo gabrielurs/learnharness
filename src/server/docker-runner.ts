@@ -19,7 +19,10 @@ import { CODE_LIMITS, outputsMatch, type CodeLanguage, type CodeRunCase, type Co
 
 /** Pinned by digest (silkeh/clang:19, Debian clang 19.1.7 — glibc, so the
  *  sanitizer runtimes behave). A tag alone could drift under us. */
-const IMAGE = "silkeh/clang@sha256:f5ce959d91f059acf5a4b3f1c19f46713c4b2881c7d7cd1d5143ca1d1412277f";
+/** The pinned sandbox base image (silkeh/clang:19, glibc). Shared so the
+ *  clangd sandbox derives from the same digest. */
+export const SANDBOX_IMAGE = "silkeh/clang@sha256:f5ce959d91f059acf5a4b3f1c19f46713c4b2881c7d7cd1d5143ca1d1412277f";
+const IMAGE = SANDBOX_IMAGE;
 
 const MEMORY_LIMIT = "512m";
 const PIDS_LIMIT = "64";
@@ -158,7 +161,9 @@ async function ensureImage(): Promise<void> {
 	}
 }
 
-const DOCKER_RUN_FLAGS = [
+/** The container isolation flags, shared so every sandbox (runner, clangd)
+ *  is confined identically. Readonly — one source of truth. */
+export const SANDBOX_RUN_FLAGS: readonly string[] = [
 	"--network", "none",
 	"--memory", MEMORY_LIMIT,
 	"--memory-swap", MEMORY_LIMIT,
@@ -174,6 +179,7 @@ const DOCKER_RUN_FLAGS = [
 	"-w", "/work",
 	"-u", "65534:65534",
 ];
+const DOCKER_RUN_FLAGS = SANDBOX_RUN_FLAGS;
 
 /** Compile and run `request` inside a container. */
 export async function runCodeInDocker(request: CodeRunRequest): Promise<CodeRunResult> {
