@@ -679,11 +679,11 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 			// UI-only markers: plan blocks, and problem dismissals (the
 			// synthesized conclude pair carries the model's face).
 			if (marker.customType === "plan-block" || marker.customType === "problem-dismissed") continue;
-			// The ACTIVE compaction marker already rendered as the head —
-			// never twice. (Stale markers before the cut are unreachable; a
-			// marker whose cut could not resolve has no head and renders as
-			// its user text — honest degradation.)
-			if (marker.customType === "compaction" && head !== null && marker.id === active!.id) continue;
+			// The head supersedes EVERY compaction marker — the active one
+			// rendered as the head, and older summaries inside the retained
+			// tail (upstream PR #163). Without a head (a cut that could not
+			// resolve) a marker renders as its user text — honest degradation.
+			if (marker.customType === "compaction" && head !== null) continue;
 			out.push({
 				role: "user",
 				content: [{ type: "text", text: marker.content }],

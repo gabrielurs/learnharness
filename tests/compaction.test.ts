@@ -228,6 +228,21 @@ describe("the compaction marker", () => {
 // ─── the ONE model-facing projection ────────────────────────────────────────
 
 describe("toLlmMessages honors the cut", () => {
+	it("skips superseded summaries inside the retained tail without changing the record (upstream PR #163)", () => {
+		const kept = newUserMessage("recent exchange");
+		const details = { firstKeptMessageId: kept.id, tokensBefore: 200_000, at: "t" };
+		const old = newCompactionMarker("OLD SUMMARY", details);
+		const fresh = newCompactionMarker("LATEST SUMMARY", details);
+		const later = newUserMessage("latest reply");
+		const messages = [newUserMessage("discarded"), kept, old, later, fresh];
+		const original = JSON.stringify(messages);
+		const out = toLlmMessages(messages as never);
+		assert.equal(out.length, 3, "latest summary + retained exchange + latest reply");
+		assert.ok(JSON.stringify(out).includes("LATEST SUMMARY"));
+		assert.ok(!JSON.stringify(out).includes("OLD SUMMARY"));
+		assert.equal(JSON.stringify(messages), original, "full history remains persisted");
+	});
+
 	it("the active marker renders ONCE as the head; the span before the cut is gone; the kept tail rides verbatim", () => {
 		const span = [big("m1"), assistantText("a0", "early lecture")];
 		const kept = [newUserMessage("m2"), assistantText("a1", "recent")];
@@ -286,6 +301,12 @@ describe("toLlmMessages honors the cut", () => {
 // ─── the summarizer input ────────────────────────────────────────────────────
 
 describe("serializeForSummary + buildCompactionPrompt", () => {
+	it("excludes compaction markers from the span: the caller supplies the prior summary separately (upstream PR #163)", () => {
+		const message = newUserMessage("recent exchange");
+		const marker = newCompactionMarker("OLD SUMMARY", { firstKeptMessageId: message.id, tokensBefore: 1, at: "t" });
+		assert.equal(serializeForSummary([message, marker]), "[LEARNER] recent exchange");
+	});
+
 	it("labels roles; truncates long tool results; skips plan blocks", () => {
 		const long = "y".repeat(5_000);
 		const messages: LhMessage[] = [

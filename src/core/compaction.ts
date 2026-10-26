@@ -335,6 +335,9 @@ export function serializeForSummary(messages: readonly LhMessage[]): string {
 		} else if (role === "custom") {
 			const marker = m as LhMarkerMessage;
 			if (marker.customType === "plan-block") continue; // UI-only
+			// A prior summary inside the span: the caller supplies it
+			// separately (upstream PR #163) — never twice.
+			if (marker.customType === "compaction") continue;
 			lines.push(`[SYSTEM NOTE] ${marker.content}`);
 		}
 	}
