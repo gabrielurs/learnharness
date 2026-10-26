@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { MessageResponse } from "@/components/ai-elements/message";
+import { ToolContentResponse } from "@/components/ai-elements/message";
 import { CodeExercisePanel } from "@/components/code-exercise";
 import { finishDictation, isDictationActive, joinDictation, useDictationTarget } from "@/components/dictation";
 import {
@@ -10,7 +10,6 @@ import {
 	exerciseKind,
 	normalizeQuizType,
 	renderExerciseSubmission,
-	repairMathForDisplay,
 	type CodeSubmission,
 	type ExerciseToolInput,
 	type QuestionAnswerData,
@@ -90,11 +89,11 @@ export function ExerciseDockForm({
 					Exercise{kind !== "write" ? ` · ${CODE_KIND_LABEL[kind]}` : ""}
 				</div>
 				<div className="mb-3 font-medium">
-					<MessageResponse>{repairMathForDisplay(input.question)}</MessageResponse>
+					<ToolContentResponse>{input.question}</ToolContentResponse>
 				</div>
 				{input.details && (
 					<div className="mb-3 text-sm text-muted-foreground">
-						<MessageResponse>{input.details}</MessageResponse>
+						<ToolContentResponse>{input.details}</ToolContentResponse>
 					</div>
 				)}
 				<div className="pb-2" data-testid="exercise-code">

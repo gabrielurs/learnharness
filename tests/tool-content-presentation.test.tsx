@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
 import { MessageResponse, ToolContentResponse } from "../components/ai-elements/message.tsx";
 import { QuestionDock } from "../components/question-dock.tsx";
+import { ExerciseDockForm } from "../components/exercise-dock.tsx";
 import { AnsweredCard } from "../components/answered-card.tsx";
 import { answerForPresentation, buildAnswer, normalizeOptions, parseAskInput, parseExplainInput, parseQuizInput,
 	repairMathForDisplay, resolveCorrect, type QuestionAnswerData, type QuestionData } from "../src/core/index.ts";
@@ -105,6 +106,14 @@ test("the live dock recovers only its rendering, including question, context and
 	const before = structuredClone(source);
 	const html = renderToStaticMarkup(<QuestionDock toolName="ask_user_question" toolCallId="source_q" input={source} expanded onExpand={() => {}} onSubmit={() => {}} />);
 	assert.deepEqual(tex(html), Array(3).fill(String.raw`\nabla f`));
+	assert.deepEqual(source, before);
+});
+
+test("the exercise dock recovers its question and details the same way", () => {
+	const source = { type: "check" as const, nodeId: "n", question: doubled, details: doubled, code: { language: "c" as const, tests: [{ stdin: "", expected: "1" }] }, modelSolution: "x" };
+	const before = structuredClone(source);
+	const html = renderToStaticMarkup(<ExerciseDockForm toolCallId="source_ex" input={source} onSubmit={() => {}} />);
+	assert.deepEqual(tex(html), Array(2).fill(String.raw`\nabla f`));
 	assert.deepEqual(source, before);
 });
 
