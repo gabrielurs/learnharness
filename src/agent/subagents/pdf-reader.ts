@@ -3,6 +3,7 @@ import type { AssistantMessage, Message, ToolResultMessage, Usage, Tool } from "
 import { normalizeContext } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { resolveSourcePath } from "../tools/fs-shared.ts";
+import { guardSourcePath } from "../tools/file-access.ts";
 import { piEngineFor, type PiEngine, type ThinkingLevel } from "../models.ts";
 import { providerEventObserver, type ProviderEventObserver } from "../provider-events.ts";
 import type { PdfResult, PdfToolInput } from "../../core/contracts.ts";
@@ -167,11 +168,22 @@ export async function runPdfReaderAgent(
 ): Promise<PdfResult> {
 	const headless = opts.headless ?? getHeadless();
 	const maxIterations = opts.maxIterations ?? MAX_ITERATIONS;
+	// The learner-filesystem gate (upstream PR #157): the same policy and
+	// home anchor as read/ls/find/grep — a refused or missing path fails
+	// upfront like any unreadable source. The REAL path is what's read.
+	// The result reports the home-anchored path; the tools open the REAL
+	// path the guard checked (a symlink can't swap in another file).
 	const pdfPath = resolveSourcePath(input.path);
-
-	// Deterministic upfront failure: unreadable / unparseable
-	// for renders — the brief never starts on a broken source.
-	const openError = await probeReadable(pdfPath);
+	let realPath = pdfPath;
+	let openError: string | null;
+	try {
+		realPath = await guardSourcePath(pdfPath);
+		// Deterministic upfront failure: unreadable / unparseable
+		// for renders — the brief never starts on a broken source.
+		openError = await probeReadable(realPath);
+	} catch (err) {
+		openError = err instanceof Error ? err.message : String(err);
+	}
 	if (openError) {
 		return { path: pdfPath, question: input.question, brief: `PDF failed: ${openError}`, pagesRead: [], pagesConsulted: [] };
 	}
@@ -179,7 +191,7 @@ export async function runPdfReaderAgent(
 	// (pdfjs paints into @napi-rs/canvas in-process) — the whole pdf-reader
 	// runs browser-free; text tools always worked without one.
 
-	const tools = createPdfTools(pdfPath);
+	const tools = createPdfTools(realPath);
 	const toolDeclarations = Object.values(tools);
 	const engine = opts.engine ?? piEngineFor("pdfReader");
 	// BYOK (owner, 2026-09-22): the level rides the injected engine — no
@@ -253,12 +265,12 @@ export async function runPdfReaderAgent(
 				try {
 					if (call.name === "pdf_info") {
 						opts.onActivity?.("pdf_info: triaging");
-						const r = await pdfInfoText(pdfPath);
+						const r = await pdfInfoText(realPath);
 						toolResults.push(toolText(call.id, call.name, String(r)));
 					} else if (call.name === "pdf_extract") {
 						const spec = String(args.pages ?? "all");
 						opts.onActivity?.(`pdf_extract: ${spec}`);
-						const r = await pdfExtractText(pdfPath, spec);
+						const r = await pdfExtractText(realPath, spec);
 						toolResults.push(toolText(call.id, call.name, String(r)));
 						for (const p of specNumbers(spec, Infinity)) {
 							consulted.add(p);
@@ -272,7 +284,7 @@ export async function runPdfReaderAgent(
 						// Direct call (not the tool's execute): the loop needs the hits'
 						// pages — a hit's context lines ARE consultation, so they join
 						// the citation set (the unread-finish gate counts them).
-						const { hits } = await pdfSearch(pdfPath, query, { contextLines, literal });
+						const { hits } = await pdfSearch(realPath, query, { contextLines, literal });
 						for (const h of hits) consulted.add(h.page);
 						const cap = hits.slice(0, 40);
 						const body =
@@ -286,7 +298,7 @@ export async function runPdfReaderAgent(
 						const dpi = numOr(args.dpi, 150);
 						const wanted = specNumbers(spec, RENDER_BATCH_CAP);
 						opts.onActivity?.(`pdf_render: ${spec} @${dpi}dpi`);
-						const pages = await headless.renderPdfPages(pdfPath, wanted, { dpi });
+						const pages = await headless.renderPdfPages(realPath, wanted, { dpi });
 						for (const p of pages) {
 							consulted.add(p.page);
 							read.add(p.page);

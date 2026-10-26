@@ -105,7 +105,7 @@ describe("pdf-reader source paths", () => {
 			assert.match(lastContext, /Pages: 3/, "metadata opened the home-anchored PDF");
 			assert.deepEqual(result.pagesRead, [2, 3]);
 			assert.deepEqual(result.pagesConsulted, [1, 2, 3], "search and extraction opened the home-anchored PDF");
-			assert.deepEqual(headless.paths, [absolutePath]);
+			assert.deepEqual(headless.paths, [fs.realpathSync(absolutePath)], "rendering opens the real path the access guard checked");
 		});
 	}
 
