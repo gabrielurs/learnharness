@@ -13,7 +13,8 @@ import * as path from "node:path";
 import { after, describe, it } from "node:test";
 import { probeDoneTool } from "../src/agent/tools/probe.ts";
 import type { SteerMessage } from "../src/core/contracts.ts";
-import type { LhMessage } from "../src/core/native-messages.ts";
+import { hasProbeDone, type LhMessage } from "../src/core/native-messages.ts";
+import { phaseAt3Lh } from "../src/core/phases.ts";
 import { HANDOFF_TEXT } from "../src/core/contracts.ts";
 import { chatStore } from "../src/store/chats.ts";
 import { PATHS } from "../config.ts";
@@ -120,6 +121,42 @@ describe("probe_done: the probe→planning seam", () => {
 		assert.equal(res.ok, false);
 		assert.match(res.error!, /already concluded/i);
 		assert.equal(delivered.length, 0);
+	});
+
+	it("an UNMATCHED probe_done never concludes — the prober can still call it (upstream PR #130)", async () => {
+		const chatId = newChat("Probe: orphaned call");
+		// A call whose turn died before its result was persisted.
+		chatStore.saveMessages(chatId, [assistantWithCall("m1", "probe_done", { assessment: ASSESSMENT })]);
+		const delivered: SteerMessage[] = [];
+		const tools = probeDoneTool({ chatId, chatStore, deliver: (s) => delivered.push(s) });
+		assert.equal(hasProbeDone(chatStore.getChat(chatId)!.messages), false, "a call alone is not a conclusion");
+		const res = await execute(tools, { assessment: ASSESSMENT });
+		assert.equal(res.ok, true, "the probe is still open, so this one concludes it");
+		assert.equal(delivered.length, 1);
+	});
+
+	it("a REFUSED probe_done (batched beside a question) concludes nothing: the chat stays in the probe", async () => {
+		const chatId = newChat("Probe: refused beside a quiz");
+		chatStore.saveMessages(chatId, [
+			assistantWithCall("m0", "quiz", { question: "q?", options: [{ label: "a" }], correctAnswer: "a" }),
+		]);
+		const tools = probeDoneTool({ chatId, chatStore, deliver: () => {} });
+		const refusal = await tools.probe_done!.execute("call_m1", { assessment: ASSESSMENT });
+		assert.equal((refusal.details as { ok: boolean }).ok, false);
+		assert.notEqual(refusal.isError, true, "the refusal reaches the record as a plain result — the seam must read details");
+		const record = [
+			...chatStore.getChat(chatId)!.messages,
+			assistantWithCall("m1", "probe_done", { assessment: ASSESSMENT }),
+			{ id: "m1r", role: "toolResult", toolCallId: "call_m1", toolName: "probe_done", content: refusal.content, details: refusal.details, isError: false, timestamp: Date.now() } as never,
+		] as LhMessage[];
+		assert.equal(hasProbeDone(record), false, "never the teacher on a refusal");
+		assert.equal(phaseAt3Lh(record), "probe");
+		const concluded = [
+			...record,
+			{ id: "m2r", role: "toolResult", toolCallId: "call_m2", toolName: "probe_done", content: [], details: { ok: true }, isError: false, timestamp: Date.now() } as never,
+		] as LhMessage[];
+		assert.equal(hasProbeDone(concluded), true, "a later successful call concludes");
+		assert.equal(phaseAt3Lh(concluded), "plan");
 	});
 
 	it("REFUSES an unknown chat defensively", async () => {

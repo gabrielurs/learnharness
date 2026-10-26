@@ -80,7 +80,12 @@ function advance(
 		// plan → teach only via the first nodeId-tagged quiz CALL (the call,
 		// not its answer — an errored-and-retried call still proves teaching
 		// began, and the retry lands in the same group anyway).
-		if (phase === "probe" && part.type === "tool-probe_done" && part.state === "output-available") {
+		if (
+			phase === "probe" &&
+			part.type === "tool-probe_done" &&
+			part.state === "output-available" &&
+			(part.output as { ok?: unknown } | null | undefined)?.ok !== false
+		) {
 			phase = "plan";
 		}
 		// plan → teach via the first nodeId-tagged quizzing CALL — quiz OR
@@ -153,7 +158,7 @@ export function phaseTimeline(messages: readonly PhaseMessage[]): Phase3[] {
 
 // ─── the native fold (Wave D: record-side phase over LhMessage[]) ───────────
 
-import type { LhMessage } from "./native-messages.ts";
+import { probeDoneConcluded, type LhMessage } from "./native-messages.ts";
 
 /** The phase at `upToIndex` (inclusive; default: the last message) of a
  *  NATIVE record. probe→plan advances at the probe_done call's clean
@@ -167,11 +172,11 @@ export function phaseAt3Lh(messages: readonly LhMessage[], upToIndex?: number): 
 		const m = messages[i]!;
 		const role = (m as { role?: string }).role;
 		if (role === "toolResult") {
-			const result = m as { toolName?: string; isError?: boolean };
+			const result = m as { toolName?: string; isError?: boolean; details?: unknown };
 			if (
 				phase === "probe" &&
 				result.toolName === "probe_done" &&
-				!result.isError
+				probeDoneConcluded(result)
 			) {
 				phase = "plan";
 			}
