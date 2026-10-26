@@ -7,7 +7,7 @@ import { after, before, describe, it } from "node:test";
 import { Type } from "typebox";
 import { normalizeContext, type AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { renderBridgePrompt } from "../src/agent/claude-code/transcript.ts";
-import { BridgeAssembler, bridgeArgs, findClaudeBinary, mcpToolList, CLAUDE_BIN_ENV } from "../src/agent/claude-code/cli.ts";
+import { BridgeAssembler, bridgeArgs, deliveredSinceLearner, findClaudeBinary, mcpToolList, CLAUDE_BIN_ENV } from "../src/agent/claude-code/cli.ts";
 import { MCP_SERVER_SOURCE } from "../src/agent/claude-code/mcp-server.ts";
 import { CLAUDE_CODE_PROVIDER } from "../src/agent/claude-code/provider.ts";
 import { piEngineForSpec, piModels } from "../src/agent/models.ts";
@@ -294,6 +294,21 @@ describe("claude-code CLI seam", () => {
 		ws.feed(se({ type: "content_block_stop", index: 0 }));
 		ws.feed(se({ type: "message_stop" }));
 		assert.equal(ws.output.stopReason, "error");
+	});
+
+	it("after send_to_user, an empty closing reply ends the turn normally (upstream 0.3.8)", () => {
+		const asm = new BridgeAssembler({ api: "claude-code-cli", provider: "claude-code", id: "x" }, () => {}, undefined, true);
+		asm.feed(se({ type: "message_start", message: { usage: {} } }));
+		asm.feed(se({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } }));
+		asm.feed(se({ type: "message_stop" }));
+		assert.equal(asm.output.stopReason, "stop");
+		const a = (name: string) => ({ role: "assistant", content: [{ type: "toolCall", id: name, name, arguments: {} }] });
+		const r = (name: string) => ({ role: "toolResult", toolCallId: name, toolName: name, content: [], isError: false });
+		const ctx = (...messages: object[]) => ({ messages }) as never;
+		assert.equal(deliveredSinceLearner(ctx({ role: "user", content: "hola" }, a("send_to_user"), r("send_to_user"))), true);
+		assert.equal(deliveredSinceLearner(ctx(a("send_to_user"), r("send_to_user"), { role: "user", content: "sigue" })), false);
+		// A question answer is the learner speaking: an earlier delivery doesn't count.
+		assert.equal(deliveredSinceLearner(ctx(a("send_to_user"), r("send_to_user"), a("probe"), r("probe"))), false);
 	});
 
 	it("caps a runaway response", () => {

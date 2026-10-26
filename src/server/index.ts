@@ -47,4 +47,5 @@ export * from "./model-catalog.ts";
 export * from "./code-runner.ts";
 // clangd behind the editor (completions + diagnostics, owner 2026-10-25).
 export { clangdComplete, clangdDiagnostics } from "./clangd.ts";
+export { subscriptionControlsResponse, subscriptionBrowserResponse } from "./web-subscription-http.ts";
 export { sessionCost } from "./pricing.ts";

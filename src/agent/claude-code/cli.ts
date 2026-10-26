@@ -18,6 +18,8 @@ import {
 	type TranscriptContext,
 	type Usage,
 } from "@earendil-works/pi-ai";
+import { QUESTION_TOOLS } from "../../core/pending.ts";
+import { SEND_TO_USER_TOOL } from "../../core/native-messages.ts";
 import { MCP_SERVER_SOURCE } from "./mcp-server.ts";
 import { BRIDGE_MCP_SERVER, BRIDGE_TOOL_PREFIX, renderBridgePrompt } from "./transcript.ts";
 
@@ -253,6 +255,9 @@ export class BridgeAssembler {
 		/** The app tool names served this call: a leaked call naming none of
 		 *  them is an example, not a call. Absent → any name counts. */
 		private readonly served?: ReadonlySet<string>,
+		/** This step's prose already went out through send_to_user (upstream
+		 *  0.3.8): an empty closing reply is the documented way to end. */
+		private readonly delivered = false,
 	) {
 		this.output = emptyMessage(model);
 	}
@@ -488,7 +493,7 @@ export class BridgeAssembler {
 		// 0 output tokens right after a probe answer) — would end the turn
 		// silently with nothing on screen; fail it so the learner gets Retry.
 		const said = this.output.content.some((c) => (c.type === "text" && c.text.trim()) || c.type === "toolCall");
-		if (!said && this.stopReason !== "max_tokens") {
+		if (!said && !this.delivered && this.stopReason !== "max_tokens") {
 			this.output.usage = toPiUsage(this.rawUsage);
 			this.fail("error", "Claude returned an empty reply — press Retry");
 			return;
@@ -556,11 +561,24 @@ function writeCallFiles(dir: string, systemPrompt: string, tools: readonly Tool[
 	return files;
 }
 
+/** Did the model already call send_to_user since the learner last spoke
+ *  (a user message or a question answer)? Then an empty reply just ends
+ *  the turn; otherwise it is the silent-turn failure (exported for tests). */
+export function deliveredSinceLearner(context: TranscriptContext): boolean {
+	for (let i = context.messages.length - 1; i >= 0; i--) {
+		const m = context.messages[i]!;
+		if (m.role === "user") return false;
+		if (m.role === "toolResult" && (QUESTION_TOOLS as readonly string[]).includes(m.toolName)) return false;
+		if (m.role === "assistant" && m.content.some((c) => c.type === "toolCall" && c.name === SEND_TO_USER_TOOL)) return true;
+	}
+	return false;
+}
+
 /** Stream one model request through `claude -p`. */
 export function streamClaudeCode(model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 	const { systemPrompt, content, tools } = renderBridgePrompt(context);
-	const assembler = new BridgeAssembler(model, (event) => stream.push(event), new Set(tools.map((t) => t.name)));
+	const assembler = new BridgeAssembler(model, (event) => stream.push(event), new Set(tools.map((t) => t.name)), deliveredSinceLearner(context));
 	let ended = false;
 	const end = () => {
 		if (ended) return;
