@@ -36,7 +36,7 @@ test("actual select → submit → saved result → historical Why uses source d
 		// The fork's forgotten-confidence nudge (2026-10-24): the first submit
 		// with an untouched slider asks; the second sends the deliberate 50.
 		await act(async () => submit.closest("form")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })));
-		assert.equal(answer, undefined, "the first submit only nudges");
+		assert.equal((() => answer)(), undefined, "the first submit only nudges");
 		await act(async () => submit.closest("form")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })));
 		assert.ok(answer);
 		assert.equal(answer.questionText, question);
