@@ -88,25 +88,54 @@ function run(cmd: string, args: string[], opts: { stdin?: string; timeoutMs: num
 }
 
 let availability: Promise<boolean> | undefined;
+let probedAt = 0;
+/** Re-probe the daemon at most this often: the learner may quit Docker
+ *  Desktop mid-session (battery), or start it after boot (audit, 2026-10-26). */
+const AVAILABILITY_TTL_MS = 20_000;
 
-/** Is a usable Docker daemon reachable? Cached for the process. */
+/** Is a usable Docker daemon reachable? Cached with a short TTL. */
 export function dockerAvailable(): Promise<boolean> {
-	availability ??= run("docker", ["version", "--format", "{{.Server.Version}}"], { timeoutMs: 5_000 }).then(
-		(r) => r.exitCode === 0 && !r.timedOut && r.stdout.trim().length > 0,
-		() => false,
-	);
+	const now = Date.now();
+	if (!availability || now - probedAt > AVAILABILITY_TTL_MS) {
+		probedAt = now;
+		availability = run("docker", ["version", "--format", "{{.Server.Version}}"], { timeoutMs: 5_000 }).then(
+			(r) => r.exitCode === 0 && !r.timedOut && r.stdout.trim().length > 0,
+			() => false,
+		);
+	}
 	return availability;
 }
 
+/** Forget the cached answer so the next call re-probes (after a daemon
+ *  error surfaced mid-run). */
+export function resetDockerAvailability(): void {
+	availability = undefined;
+	probedAt = 0;
+}
+
+/** The daemon became unreachable (quit mid-session), or the image is
+ *  absent — both mean: fall back to the local sandbox. */
 export class DockerImageMissingError extends Error {}
+
+/** Docker reported it cannot reach the daemon (quit after the probe). */
+function daemonGone(stderr: string): boolean {
+	return /cannot connect to the docker daemon|failed to connect to the docker|the daemon is running|is the docker daemon running|error during connect|connect: no such file|connection refused/i.test(stderr);
+}
 
 /** Ensure the pinned image is present (pull once). Throws if it cannot be
  *  obtained, so the caller can fall back or report. */
 async function ensureImage(): Promise<void> {
 	const present = await run("docker", ["image", "inspect", IMAGE], { timeoutMs: 10_000 });
 	if (present.exitCode === 0) return;
+	if (daemonGone(present.stderr)) {
+		resetDockerAvailability();
+		throw new DockerImageMissingError("the Docker daemon is not reachable");
+	}
 	const pulled = await run("docker", ["pull", "--quiet", IMAGE], { timeoutMs: 300_000 });
-	if (pulled.exitCode !== 0) throw new DockerImageMissingError(`could not pull the code-runner image: ${pulled.stderr.trim().slice(0, 300)}`);
+	if (pulled.exitCode !== 0) {
+		if (daemonGone(pulled.stderr)) resetDockerAvailability();
+		throw new DockerImageMissingError(`could not pull the code-runner image: ${pulled.stderr.trim().slice(0, 300)}`);
+	}
 }
 
 const DOCKER_RUN_FLAGS = [
@@ -140,6 +169,7 @@ export async function runCodeInDocker(request: CodeRunRequest): Promise<CodeRunR
 			{ timeoutMs: 30_000 },
 		);
 		if (started.exitCode !== 0 || !started.stdout.trim()) {
+			if (daemonGone(started.stderr)) resetDockerAvailability();
 			throw new DockerImageMissingError(`could not start the code-runner container: ${started.stderr.trim().slice(0, 300)}`);
 		}
 		containerId = started.stdout.trim();
@@ -149,6 +179,11 @@ export async function runCodeInDocker(request: CodeRunRequest): Promise<CodeRunR
 			["exec", containerId, COMPILE[request.language].bin, std, ...COMMON_FLAGS, "-o", "/work/main", `/src/${file}`],
 			{ timeoutMs: CODE_LIMITS.compileTimeoutMs + 5_000 },
 		);
+		// The daemon vanished between start and exec (quit mid-run): fall back.
+		if (compiled.exitCode !== 0 && daemonGone(compiled.stderr)) {
+			resetDockerAvailability();
+			throw new DockerImageMissingError(`the Docker daemon became unreachable: ${compiled.stderr.trim().slice(0, 200)}`);
+		}
 		const compileOk = compiled.exitCode === 0 && !compiled.timedOut;
 		const compile = {
 			ok: compileOk,

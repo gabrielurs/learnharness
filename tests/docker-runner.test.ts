@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { dockerAvailable, runCodeInDocker } from "../src/server/docker-runner.ts";
+import { dockerAvailable, resetDockerAvailability, runCodeInDocker } from "../src/server/docker-runner.ts";
 
 /** The Docker code-execution backend (fork, 2026-10-26 audit R1–R5): the
  *  learner's C compiles and runs in a throwaway container that cannot reach
@@ -9,6 +9,21 @@ import { dockerAvailable, runCodeInDocker } from "../src/server/docker-runner.ts
 const available = await dockerAvailable();
 const SUM = '#include <stdio.h>\nint main(void){int a,b;if(scanf("%d %d",&a,&b)!=2)return 1;printf("%d\\n",a+b);return 0;}\n';
 const run = async (source: string, stdin = "") => (await runCodeInDocker({ language: "c", source, stdin })).cases[0]!;
+
+describe("docker availability probe", () => {
+	it("reports false and resets when the daemon is unreachable (mid-session quit)", async () => {
+		const original = process.env.DOCKER_HOST;
+		try {
+			process.env.DOCKER_HOST = "unix:///nonexistent/lh-test-docker.sock";
+			resetDockerAvailability();
+			assert.equal(await dockerAvailable(), false);
+		} finally {
+			if (original === undefined) delete process.env.DOCKER_HOST;
+			else process.env.DOCKER_HOST = original;
+			resetDockerAvailability();
+		}
+	});
+});
 
 describe("docker runner", { skip: available ? false : "no Docker daemon" }, () => {
 	it("compiles, runs each test and grades it, with sanitizers on", async () => {
