@@ -7,14 +7,15 @@
  * under a scratch workspace whose compile_flags.txt mirror the runner's
  * flags, so the editor and Run agree on what compiles.
  *
- * clangd never executes the learner's code; it only parses it. No API
- * keys reach it (a minimal env), and user/project clangd config is off.
+ * clangd runs INSIDE Docker (owner, 2026-10-26): the code runner's image
+ * plus clangd-19, under the runner's isolation flags (no network, no host
+ * mount, read-only, nobody). The editor text reaches it over stdio only, so
+ * an `#include "/host/path"` finds nothing of the host. Without Docker the
+ * editor has no assistance (owner: no host clangd fallback); the image is
+ * built locally on first use, and nothing is suggested while it builds.
  */
-import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { accessSync, constants, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	offsetToPosition,
 	positionToOffset,
@@ -25,6 +26,7 @@ import {
 	type CodeDiagnosticsResult,
 	type CodeLanguage,
 } from "../core/contracts/code.ts";
+import { dockerAvailable, SANDBOX_IMAGE, SANDBOX_RUN_FLAGS } from "./docker-runner.ts";
 
 /** Shut clangd down after this long without a request. */
 export const CLANGD_IDLE_MS = 5 * 60_000;
@@ -37,6 +39,9 @@ const FRESH_RETRY_MS = 60;
 const FRESH_WINDOW_MS = 5_000;
 /** Open documents kept in clangd (oldest closed beyond this). */
 const MAX_DOCS = 20;
+/** This many requests in a row unanswered in time = clangd is stuck: it
+ *  is restarted, and the editor pauses (owner, 2026-10-26). */
+const STUCK_AFTER = 3;
 
 const FLAGS: Record<CodeLanguage, string[]> = {
 	c: ["-xc", "-std=c17", "-Wall", "-Wextra"],
@@ -44,42 +49,193 @@ const FLAGS: Record<CodeLanguage, string[]> = {
 };
 const EXT: Record<CodeLanguage, string> = { c: "c", cpp: "cpp" };
 
-const SEARCH = [
-	"/Library/Developer/CommandLineTools/usr/bin/clangd",
-	"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clangd",
-	"/opt/homebrew/opt/llvm/bin/clangd",
-	"/usr/local/opt/llvm/bin/clangd",
-];
+/** The workspace inside the container (the runner's tmpfs). */
+const ROOT = "/work";
+const CLANGD_ARGS = ["--log=error", "--background-index=false", "--header-insertion=never", "--completion-style=detailed", "--limit-results=100", "-j=2"];
+/** The workspace's .clangd — the only config clangd can find in the
+ *  container. Linux clangd 19 flags unused/missing #includes by default;
+ *  a learner's `#include <stdio.h>` is not a mistake (and the host clangd
+ *  before it never said so). */
+const CLANGD_CONFIG = ["Diagnostics:", "  UnusedIncludes: None", "  MissingIncludes: None"];
 
-/** The clangd binary: LH_CLANGD, then PATH, then the usual toolchain homes. */
-export function findClangd(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const candidates = [
-		...(env.LH_CLANGD ? [env.LH_CLANGD] : []),
-		...(env.PATH ?? "").split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, "clangd")),
-		...SEARCH,
-	];
-	for (const candidate of candidates) {
-		try {
-			accessSync(candidate, constants.X_OK);
-			return candidate;
-		} catch {}
-	}
-	return undefined;
+/** The runner's pinned image plus clangd (Debian's clangd-19 matches its
+ *  clang 19). Built locally from stdin — no build context, nothing of the
+ *  host goes in. The tag follows the recipe, so a change rebuilds. */
+export const CLANGD_DOCKERFILE = `FROM ${SANDBOX_IMAGE}
+RUN apt-get update \\
+	&& apt-get install -y --no-install-recommends clangd-19 \\
+	&& rm -rf /var/lib/apt/lists/*
+`;
+export const CLANGD_IMAGE = `learnharness-clangd:${createHash("sha256").update(CLANGD_DOCKERFILE).digest("hex").slice(0, 12)}`;
+/** Mark our containers with the owning server's pid and start time, so a
+ *  restart can sweep the orphans of a dead one (and only those): a reused
+ *  pid belongs to a process with a later start. */
+const CONTAINER_LABEL = "learnharness.clangd.pid";
+const STARTED_LABEL = "learnharness.clangd.started";
+/** A failed image build is retried after this long, not per keystroke. */
+const IMAGE_RETRY_MS = 10 * 60_000;
+const IMAGE_BUILD_TIMEOUT_MS = 10 * 60_000;
+
+/** What a session spawns: the docker run (production) or a test fake. */
+export interface ClangdLaunch {
+	command: string;
+	args: string[];
+	/** The container to `docker rm -f` when the session dies. */
+	container?: string;
+	/** Tests: a shorter wait per request than REQUEST_TIMEOUT_MS. */
+	requestTimeoutMs?: number;
 }
 
-/** macOS: the SDK clangd must see to find <stdio.h> (absent elsewhere).
- *  Asked once per server process — xcrun is synchronous. */
-let sdkCache: { path: string | undefined } | null = null;
-function sdkPath(): string | undefined {
-	if (sdkCache) return sdkCache.path;
-	let found: string | undefined;
-	if (process.platform === "darwin") {
-		try {
-			found = execFileSync("xcrun", ["--show-sdk-path"], { encoding: "utf8", timeout: 5_000 }).trim() || undefined;
-		} catch {}
+/** A docker CLI call; never rejects. */
+function docker(args: string[], opts: { stdin?: string; timeoutMs: number }): Promise<{ ok: boolean; stdout: string }> {
+	return new Promise((resolve) => {
+		const child = spawn("docker", args, { stdio: ["pipe", "pipe", "ignore"] });
+		let stdout = "";
+		child.stdout.setEncoding("utf8");
+		child.stdout.on("data", (c: string) => (stdout += c));
+		const timer = setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs);
+		const settle = (ok: boolean) => {
+			clearTimeout(timer);
+			resolve({ ok, stdout });
+		};
+		child.on("error", () => settle(false));
+		child.on("close", (code) => settle(code === 0));
+		child.stdin.on("error", () => {});
+		child.stdin.end(opts.stdin ?? "");
+	});
+}
+
+/** Is the clangd image present? Absent → start ONE background build and
+ *  answer false until it lands (a failed build waits IMAGE_RETRY_MS). */
+async function imageReady(): Promise<boolean> {
+	const s = slot();
+	const image = (s.image ??= { status: "unknown", at: 0 });
+	if (image.status === "ready") return true;
+	if (image.status === "building") return false;
+	if (image.status === "failed" && Date.now() - image.at < IMAGE_RETRY_MS) return false;
+	image.check ??= docker(["image", "inspect", CLANGD_IMAGE], { timeoutMs: 10_000 }).then((r) => r.ok);
+	const present = await image.check;
+	image.check = undefined;
+	if (image.status !== "unknown" && image.status !== "failed") return image.status === "ready";
+	if (present) {
+		image.status = "ready";
+		return true;
 	}
-	sdkCache = { path: found };
-	return found;
+	image.status = "building";
+	image.at = Date.now();
+	void docker(["build", "--quiet", "-t", CLANGD_IMAGE, "-"], { stdin: CLANGD_DOCKERFILE, timeoutMs: IMAGE_BUILD_TIMEOUT_MS }).then((r) => {
+		image.status = r.ok ? "ready" : "failed";
+		image.at = Date.now();
+		if (!r.ok) console.warn("[clangd] could not build the clangd image; editor assistance is off for now");
+	});
+	return false;
+}
+
+/** Remove containers left by a server that died without stopping its
+ *  clangd (a dev restart). Once per server process. */
+async function sweepOrphans(): Promise<void> {
+	const s = slot();
+	if (s.swept) return;
+	s.swept = true;
+	const format = `{{.ID}}\t{{.Label "${CONTAINER_LABEL}"}}\t{{.Label "${STARTED_LABEL}"}}`;
+	const listed = await docker(["ps", "-a", "--filter", `label=${CONTAINER_LABEL}`, "--format", format], { timeoutMs: 10_000 });
+	const rows = listed.stdout
+		.split("\n")
+		.map((line) => line.split("\t"))
+		.filter(([id]) => id?.trim())
+		.map(([id, pid, started]) => ({ id: id!.trim(), pid: Number(pid), started: started?.trim() ?? "" }));
+	const starts = await processStarts(rows.map((r) => r.pid).filter((pid) => Number.isInteger(pid) && pid > 0));
+	// No process list (ps failed): every container would look dead,
+	// another live server's too — sweep nothing this time.
+	if (!starts) return;
+	// Labeled with a start time: alive only if that pid still has it. An
+	// older container (pid label only) falls back to the pid check.
+	const orphans = rows.filter((r) => (r.started ? starts.get(r.pid) !== r.started : !pidAlive(r.pid))).map((r) => r.id);
+	if (orphans.length > 0) await docker(["rm", "-f", ...orphans], { timeoutMs: 20_000 });
+}
+
+/** Start times of live processes, as ps prints them (C locale); a pid
+ *  missing from the map is not running. Null when ps itself failed. */
+function processStarts(pids: number[]): Promise<Map<number, string> | null> {
+	return new Promise((resolve) => {
+		const starts = new Map<number, string>();
+		if (pids.length === 0) return resolve(starts);
+		// Every process, filtered here: `ps -p` fails whole on one
+		// out-of-range pid (a label is data, not a trusted pid).
+		const wanted = new Set(pids);
+		execFile("ps", ["-A", "-o", "pid=,lstart="], { env: { ...process.env, LC_ALL: "C" }, timeout: 5_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+			if (err) return resolve(null);
+			for (const line of String(stdout ?? "").split("\n")) {
+				const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(line);
+				if (m && wanted.has(Number(m[1]))) starts.set(Number(m[1]), m[2]!);
+			}
+			resolve(starts);
+		});
+	});
+}
+
+/** This server's own start time (its containers' STARTED_LABEL). */
+let ownStart: Promise<string> | null = null;
+function serverStart(): Promise<string> {
+	return (ownStart ??= processStarts([process.pid]).then((m) => m?.get(process.pid) ?? ""));
+}
+
+function pidAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	if (pid === process.pid) return true;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/** The docker run behind a session, or null while Docker (or the image)
+ *  is not there — the editor then simply has no assistance. */
+async function dockerLaunch(): Promise<ClangdLaunch | null> {
+	if (!(await dockerAvailable())) return null;
+	if (!(await imageReady())) return null;
+	await sweepOrphans();
+	const started = await serverStart();
+	const container = `learnharness-clangd-${process.pid}-${Date.now().toString(36)}`;
+	// compile_flags.txt per language and the .clangd, written inside the
+	// container's tmpfs (all constants — nothing from a request).
+	const setup = [
+		...(["c", "cpp"] as const).map((l) => `mkdir -p ${ROOT}/${l} && printf '%s\\n' ${FLAGS[l].join(" ")} > ${ROOT}/${l}/compile_flags.txt`),
+		`printf '%s\\n' ${CLANGD_CONFIG.map((line) => `'${line}'`).join(" ")} > ${ROOT}/.clangd`,
+	].join(" && ");
+	return {
+		command: "docker",
+		args: [
+			"run", "-i", "--rm", "--pull", "never",
+			"--name", container,
+			"--label", `${CONTAINER_LABEL}=${process.pid}`,
+			"--label", `${STARTED_LABEL}=${started}`,
+			...SANDBOX_RUN_FLAGS,
+			"-e", `HOME=${ROOT}`,
+			"--entrypoint", "sh",
+			CLANGD_IMAGE,
+			"-c", `${setup} && exec clangd-19 ${CLANGD_ARGS.join(" ")}`,
+		],
+		container,
+	};
+}
+
+/** Tests: run sessions from this launch instead of Docker (a fake clangd). */
+let launchOverride: (() => ClangdLaunch) | null = null;
+export function setClangdLaunchForTests(launch: (() => ClangdLaunch) | null): void {
+	launchOverride = launch;
+}
+
+/** Tests: is assistance usable here (Docker up, image built)? Waits for
+ *  a build this call starts. */
+export async function clangdUsable(): Promise<boolean> {
+	if (!(await dockerAvailable())) return false;
+	if (await imageReady()) return true;
+	const deadline = Date.now() + IMAGE_BUILD_TIMEOUT_MS;
+	while (slot().image?.status === "building" && Date.now() < deadline) await new Promise((r) => setTimeout(r, 500));
+	return slot().image?.status === "ready";
 }
 
 interface OpenDoc {
@@ -112,34 +268,31 @@ interface LspCompletionItem {
 	textEdit?: { range: LspDiagnostic["range"]; newText: string };
 }
 
+class ClangdTimeout extends Error {}
+
 class ClangdSession {
 	private proc: ChildProcessWithoutNullStreams;
 	private buffer = Buffer.alloc(0);
 	private nextId = 0;
 	private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 	private docs = new Map<string, OpenDoc>();
-	readonly root: string;
+	private readonly container: string | undefined;
 	readonly initialized: Promise<void>;
 	readonly startedAt = Date.now();
 	dead = false;
 	/** A deliberate shutdown (idle, tests) — never counted as a crash. */
 	private stopping = false;
+	private readonly requestTimeoutMs: number;
+	/** Requests in a row clangd did not answer in time, per kind: one
+	 *  that still completes but stopped publishing diagnostics is stuck too. */
+	private late = { complete: 0, diagnose: 0 };
 
-	constructor(binary: string) {
-		this.root = mkdtempSync(path.join(tmpdir(), "learnharness-clangd-"));
-		const sdk = sdkPath();
-		for (const language of ["c", "cpp"] as const) {
-			mkdirSync(path.join(this.root, language), { recursive: true });
-			writeFileSync(path.join(this.root, language, "compile_flags.txt"), [...FLAGS[language], ...(sdk ? ["-isysroot", sdk] : [])].join("\n"));
-		}
-		this.proc = spawn(
-			binary,
-			["--log=error", "--background-index=false", "--header-insertion=never", "--completion-style=detailed", "--limit-results=100", "--enable-config=false"],
-			{
-				stdio: ["pipe", "pipe", "pipe"],
-				env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: this.root, TMPDIR: this.root, ...(process.env.DEVELOPER_DIR ? { DEVELOPER_DIR: process.env.DEVELOPER_DIR } : {}) } as unknown as NodeJS.ProcessEnv,
-			},
-		);
+	constructor(launch: ClangdLaunch) {
+		this.container = launch.container;
+		this.requestTimeoutMs = launch.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
+		// The docker CLI itself needs the user's env (its context, socket);
+		// the container gets none of it — only SANDBOX_RUN_FLAGS' own -e.
+		this.proc = spawn(launch.command, launch.args, { stdio: ["pipe", "pipe", "pipe"] });
 		this.proc.stdout.on("data", (chunk: Buffer) => this.onData(chunk));
 		this.proc.stderr.on("data", () => {});
 		// A write racing clangd's death fails with EPIPE on stdin — unhandled,
@@ -149,9 +302,9 @@ class ClangdSession {
 		this.proc.on("error", (err) => this.die(err));
 		this.initialized = this.request("initialize", {
 			processId: process.pid,
-			rootUri: pathToFileURL(this.root).href,
+			rootUri: `file://${ROOT}`,
 			capabilities: { textDocument: { completion: { completionItem: { snippetSupport: true } }, publishDiagnostics: { versionSupport: true } } },
-		}).then(() => this.notify("initialized", {}));
+		}, REQUEST_TIMEOUT_MS).then(() => this.notify("initialized", {}));
 	}
 
 	private die(err: Error) {
@@ -159,7 +312,11 @@ class ClangdSession {
 		this.dead = true;
 		// Died right after starting (a broken binary): hold off respawning,
 		// or every keystroke would spawn a fresh failure.
-		if (!this.stopping && Date.now() - this.startedAt < CRASH_WINDOW_MS) slot().backoffUntil = Date.now() + CRASH_BACKOFF_MS;
+		if (!this.stopping && Date.now() - this.startedAt < CRASH_WINDOW_MS) {
+			slot().backoffUntil = Date.now() + CRASH_BACKOFF_MS;
+			// Maybe the image went away (a prune): look again next time.
+			if (slot().image?.status === "ready") slot().image = undefined;
+		}
 		for (const { reject } of this.pending.values()) reject(err);
 		this.pending.clear();
 		for (const doc of this.docs.values()) {
@@ -170,7 +327,8 @@ class ClangdSession {
 		// spawn error): kill it — a dead session must never leave a live
 		// clangd behind.
 		if (this.proc.exitCode === null && this.proc.signalCode === null) this.proc.kill("SIGKILL");
-		rmSync(this.root, { recursive: true, force: true });
+		// Killing the docker CLI does not stop its container: remove it.
+		if (this.container) void docker(["rm", "-f", this.container], { timeoutMs: 20_000 });
 	}
 
 	private onData(chunk: Buffer) {
@@ -226,13 +384,13 @@ class ClangdSession {
 		this.send({ method, params });
 	}
 
-	request(method: string, params: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<unknown> {
+	request(method: string, params: unknown, timeoutMs = this.requestTimeoutMs): Promise<unknown> {
 		if (this.dead) return Promise.reject(new Error("clangd is not running"));
 		const id = ++this.nextId;
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
-				reject(new Error(`clangd ${method} timed out`));
+				reject(new ClangdTimeout(`clangd ${method} timed out`));
 			}, timeoutMs);
 			this.pending.set(id, {
 				resolve: (v) => {
@@ -255,7 +413,7 @@ class ClangdSession {
 		if (!doc) {
 			let markReady!: () => void;
 			const ready = new Promise<void>((r) => (markReady = r));
-			doc = { uri: pathToFileURL(path.join(this.root, language, `${docId}.${EXT[language]}`)).href, version: 1, text: source, openedAt: Date.now(), ready, markReady, diagnostics: null, waiters: [] };
+			doc = { uri: `file://${ROOT}/${language}/${docId}.${EXT[language]}`, version: 1, text: source, openedAt: Date.now(), ready, markReady, diagnostics: null, waiters: [] };
 			this.docs.set(key, doc);
 			this.notify("textDocument/didOpen", { textDocument: { uri: doc.uri, languageId: language === "c" ? "c" : "cpp", version: 1, text: source } });
 			if (this.docs.size > MAX_DOCS) {
@@ -275,15 +433,29 @@ class ClangdSession {
 		return doc;
 	}
 
-	/** Diagnostics for exactly the version just synced (or the latest, on timeout). */
-	diagnosticsFor(doc: OpenDoc): Promise<LspDiagnostic[]> {
+	/** Diagnostics for exactly the version just synced (or the latest, on
+	 *  timeout — `onTime` false). */
+	diagnosticsFor(doc: OpenDoc): Promise<{ items: LspDiagnostic[]; onTime: boolean }> {
 		const version = doc.version;
-		if (doc.diagnostics && doc.diagnostics.version >= version) return Promise.resolve(doc.diagnostics.items);
+		if (doc.diagnostics && doc.diagnostics.version >= version) return Promise.resolve({ items: doc.diagnostics.items, onTime: true });
 		return new Promise((resolve) => {
-			const done = () => resolve(doc.diagnostics?.items ?? []);
-			const timer = setTimeout(done, REQUEST_TIMEOUT_MS);
-			doc.waiters.push({ version, resolve: () => (clearTimeout(timer), done()) });
+			const done = (onTime: boolean) => resolve({ items: doc.diagnostics?.items ?? [], onTime });
+			const timer = setTimeout(() => done(false), this.requestTimeoutMs);
+			doc.waiters.push({ version, resolve: () => (clearTimeout(timer), done(!this.dead)) });
 		});
+	}
+
+	/** Count an answer in or out of time; true once clangd looks stuck. */
+	answered(kind: "complete" | "diagnose", onTime: boolean): boolean {
+		this.late[kind] = onTime ? 0 : this.late[kind] + 1;
+		return this.late[kind] >= STUCK_AFTER;
+	}
+
+	/** Put a stuck clangd down — deliberately, so no crash backoff: the
+	 *  next request (after the editor's pause) starts a fresh one. */
+	discard() {
+		this.stopping = true;
+		this.die(new Error("clangd stopped answering"));
 	}
 
 	shutdown() {
@@ -303,7 +475,13 @@ class ClangdSession {
 // One session per server process, kept on globalThis so a dev hot reload
 // reuses it instead of leaking a second clangd.
 interface ClangdGlobal {
-	__lhClangd?: { session: ClangdSession | null; idle: ReturnType<typeof setTimeout> | null; backoffUntil?: number };
+	__lhClangd?: {
+		session: ClangdSession | null;
+		idle: ReturnType<typeof setTimeout> | null;
+		backoffUntil?: number;
+		image?: { status: "unknown" | "building" | "ready" | "failed"; at: number; check?: Promise<boolean> };
+		swept?: boolean;
+	};
 }
 function slot() {
 	const g = globalThis as ClangdGlobal;
@@ -312,16 +490,21 @@ function slot() {
 const CRASH_WINDOW_MS = 5_000;
 const CRASH_BACKOFF_MS = 60_000;
 
-function session(): ClangdSession | null {
+async function session(): Promise<ClangdSession | null> {
 	const s = slot();
 	if (s.session && !s.session.dead) {
 		armIdle();
 		return s.session;
 	}
 	if ((s.backoffUntil ?? 0) > Date.now()) return null;
-	const binary = findClangd();
-	if (!binary) return null;
-	s.session = new ClangdSession(binary);
+	const launch = launchOverride ? launchOverride() : await dockerLaunch();
+	if (!launch) return null;
+	// A concurrent request may have started one while this one awaited.
+	if (s.session && !s.session.dead) {
+		armIdle();
+		return s.session;
+	}
+	s.session = new ClangdSession(launch);
 	armIdle();
 	return s.session;
 }
@@ -331,6 +514,15 @@ function armIdle() {
 	if (s.idle) clearTimeout(s.idle);
 	s.idle = setTimeout(stopClangd, CLANGD_IDLE_MS);
 	s.idle.unref?.();
+}
+
+/** clangd stopped answering: drop it (its container goes with it). The
+ *  caller answers "unavailable", so the editor pauses ASSIST_RETRY_MS. */
+function restartStuck(stuck: ClangdSession) {
+	console.warn("[clangd] not answering — restarting it");
+	stuck.discard();
+	const s = slot();
+	if (s.session === stuck) s.session = null;
 }
 
 /** Stop clangd now (idle timeout, tests). */
@@ -349,7 +541,7 @@ export function clangdRunning(): boolean {
 }
 
 async function ready(req: CodeAssistRequest): Promise<{ s: ClangdSession; doc: OpenDoc } | null> {
-	const s = session();
+	const s = await session();
 	if (!s) return null;
 	await s.initialized;
 	const doc = s.sync(req.docId, req.language, req.source);
@@ -376,11 +568,21 @@ export async function clangdComplete(req: CodeAssistRequest): Promise<CodeComple
 	// A freshly opened document answers empty for a beat after its first
 	// diagnostics (the completion preamble lands ~50 ms later, measured):
 	// retry briefly then — never on a settled document, where empty is real.
-	let raw = await ask();
-	for (let attempt = 0; raw.length === 0 && attempt < FRESH_RETRIES && Date.now() - opened.doc.openedAt < FRESH_WINDOW_MS; attempt++) {
-		await new Promise((r) => setTimeout(r, FRESH_RETRY_MS));
+	let raw: LspCompletionItem[];
+	try {
 		raw = await ask();
+		for (let attempt = 0; raw.length === 0 && attempt < FRESH_RETRIES && Date.now() - opened.doc.openedAt < FRESH_WINDOW_MS; attempt++) {
+			await new Promise((r) => setTimeout(r, FRESH_RETRY_MS));
+			raw = await ask();
+		}
+	} catch (err) {
+		if (err instanceof ClangdTimeout && opened.s.answered("complete", false)) {
+			restartStuck(opened.s);
+			return { available: false, items: [] };
+		}
+		throw err;
 	}
+	opened.s.answered("complete", true);
 	const items = raw.map((item): CodeCompletion => {
 		const edit = item.textEdit;
 		const name = (item.filterText ?? item.label).trim();
@@ -407,7 +609,11 @@ const SEVERITY: Record<number, CodeDiagnostic["severity"]> = { 1: "error", 2: "w
 export async function clangdDiagnostics(req: CodeAssistRequest): Promise<CodeDiagnosticsResult> {
 	const opened = await ready(req);
 	if (!opened) return { available: false, diagnostics: [] };
-	const items = await opened.s.diagnosticsFor(opened.doc);
+	const { items, onTime } = await opened.s.diagnosticsFor(opened.doc);
+	if (opened.s.answered("diagnose", onTime)) {
+		restartStuck(opened.s);
+		return { available: false, diagnostics: [] };
+	}
 	return {
 		available: true,
 		diagnostics: items.map((d) => ({

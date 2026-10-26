@@ -1,7 +1,8 @@
 /**
  * POST /api/code/complete (owner, 2026-10-25) — clangd completions at the
  * editor's caret (src/server/clangd.ts). POST only: clangd is spawned on
- * demand, never from a GET. `available: false` = no clangd installed.
+ * demand, never from a GET. `available: false` = no clangd right now (Docker
+ * closed or its image still building).
  */
 import { CodeRunRequestError, parseCodeAssistRequest } from "@/src/core";
 import { clangdComplete } from "@/src/server";
