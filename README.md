@@ -59,13 +59,28 @@ All three platforms support in-app updates.
 - **External services.** Models run through your configured providers. Model requests send the context needed for the task; web research and dictation also contact external services. Local storage does not mean offline processing.
 - **Inspectable behavior.** System prompts are visible and editable. The app is open source under the AGPL-3.0 license.
 
+## This fork
+
+This fork ([gabrielurs/learnharness](https://github.com/gabrielurs/learnharness)) tracks upstream and adds:
+
+- **Claude subscription instead of an API key.** The `claude-code` provider drives the [Claude Code](https://claude.com/claude-code) CLI headless, so model calls use your Claude plan's quota and cost nothing per token. Pick `claude-code` models in the model slots.
+- **C/C++ exercises.** Learner code compiles and runs in a locked-down Docker container (no network, no host files, memory and process limits). The editor's clangd completions and diagnostics run in Docker too.
+- **Study aids.** Uninterrupted browser dictation in Safari, spoken confidence, retry for failed turns, and a Pomodoro-style study timer.
+- **Hardening.** The server listens on loopback only and rejects cross-origin requests; `web_fetch` blocks private addresses, DNS rebinding and redirect tricks.
+
+Requirements on top of upstream: Node 26, the `claude` CLI installed and logged in, and Docker running for code exercises (without Docker, code runs under a macOS sandbox fallback and the editor gets no clangd assistance).
+
 ## Development and support
 
 ```bash
-npm install
-npm run dev        # http://localhost:3000
-npm test           # deterministic, no LLM, no network
+make install       # npm ci
+make sandbox       # check Docker, pull the pinned C/C++ image
+make dev           # http://127.0.0.1:3000
+make check         # typecheck, test, lint (what CI runs)
+make               # list every target
 ```
+
+The `npm run` scripts still work; the Makefile only wraps them.
 
 See the [development guide](docs/development.md), [architecture](docs/architecture.md), and [desktop release guide](docs/desktop-release.md).
 
