@@ -563,6 +563,12 @@ export interface QuestionAnswerData {
 	committed?: string; // explain only (rendering): the model's committed answer
 	explanation?: string; // quiz only (rendering)
 	dismissed?: boolean;
+	/** The learner asked about the teaching before taking this question
+	 *  (ask-before-check, upstream PR #138): a closed check or a
+	 *  prediction. Not a skip, not a grade — the teacher answers, then
+	 *  poses the same question again. On an exercise, `text` carries his
+	 *  code so far (owner, 2026-10-26). */
+	notYet?: boolean;
 	answeredAt: string;
 }
 
@@ -976,6 +982,31 @@ export function buildAnswer(qd: QuestionData, req: AnswerRequest, tool?: string)
  *  renders the question text + "skipped". Rides the same answer path —
  *  the teacher acknowledges the skip in its next turn, exactly like any
  *  answer. */
+/** The ask-before-check record (upstream PR #138): a closed check or a
+ *  prediction was waiting and he asked about the teaching instead of
+ *  taking it. The model sees {kind, notYet:true} (+ codeSoFar on an
+ *  exercise); the transcript shows his message, not a skipped card. */
+export function notYetAnswer(kind: QuestionKind, questionText: string, codeSoFar?: string): QuestionAnswerData {
+	return {
+		kind,
+		questionText,
+		dontKnow: false,
+		answers: [],
+		notYet: true,
+		...(codeSoFar?.trim() ? { text: codeSoFar } : {}),
+		answeredAt: new Date().toISOString(),
+	};
+}
+
+/** Ask-before (upstream PR #138, + the fork's exercises): a teach-phase
+ *  quiz, explain or exercise — a check still closed behind its reveal,
+ *  or a prediction (open or folded). Probe questions and
+ *  ask_user_question stay gated: a learner message must not land ahead
+ *  of those calls. */
+export function questionAllowsAskBefore(tool: string, phase: string): boolean {
+	return (tool === "quiz" || tool === "explain" || tool === "exercise") && phase === "teach";
+}
+
 export function dismissedAnswer(kind: QuestionKind, questionText: string): QuestionAnswerData {
 	return {
 		kind,
@@ -989,6 +1020,7 @@ export function dismissedAnswer(kind: QuestionKind, questionText: string): Quest
 
 export function compactAnswerForModel(ad: QuestionAnswerData): Record<string, unknown> {
 	if (ad.dismissed) return { kind: ad.kind, dismissed: true };
+	if (ad.notYet) return { kind: ad.kind, notYet: true, ...(ad.text ? { codeSoFar: ad.text } : {}) };
 	const out: Record<string, unknown> = { kind: ad.kind };
 	if (ad.dontKnow) out.dontKnow = true;
 	// Array.isArray: the seam is called with `unknown` answers (test

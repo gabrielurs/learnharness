@@ -16,6 +16,20 @@ import {
 	type QuestionData,
 } from "@/src/core";
 
+function readStored(key: string): string {
+	try {
+		return typeof window === "undefined" ? "" : (window.localStorage.getItem(key) ?? "");
+	} catch {
+		return "";
+	}
+}
+function writeStored(key: string, value: string): void {
+	try {
+		if (value) window.localStorage.setItem(key, value);
+		else window.localStorage.removeItem(key);
+	} catch {}
+}
+
 /**
  * The teacher's coding exercise in the question dock (owner, 2026-10-25):
  * the statement, the code panel (any of the four kinds) and the learner's
@@ -26,6 +40,7 @@ import {
  */
 export function ExerciseDockForm({
 	toolCallId,
+	draftKey = toolCallId,
 	input,
 	onSubmit,
 	onEscape,
@@ -33,6 +48,9 @@ export function ExerciseDockForm({
 	compactionRunning = false,
 }: {
 	toolCallId: string;
+	/** The code drafts' key — the exercise's own call id, or the one it
+	 *  re-poses after an ask-before-check (exerciseDraftKey). */
+	draftKey?: string;
 	input: ExerciseToolInput;
 	onSubmit: (output: QuestionAnswerData) => void;
 	onEscape?: () => void;
@@ -54,22 +72,31 @@ export function ExerciseDockForm({
 		[toolCallId, input],
 	);
 
-	const [thinking, setThinking] = useState("");
+	// The thinking survives like the code (owner, 2026-10-26): kept under
+	// the draft key, so a reload — or the exercise coming back after an
+	// ask-before-check — restores it. Best-effort storage.
+	const thinkingKey = `lh-code-thinking:${draftKey}`;
+	const [thinking, setThinkingState] = useState(() => readStored(thinkingKey));
 	// The ref mirrors the field: a submit resuming after `await
 	// finishDictation()` reads the dictated tail, never a stale closure.
-	const thinkingRef = useRef("");
-	useDictationTarget(
-		useCallback((t: string) => {
-			const v = joinDictation(thinkingRef.current, t);
+	const thinkingRef = useRef(thinking);
+	const setThinking = useCallback(
+		(v: string) => {
 			thinkingRef.current = v;
-			setThinking(v);
-		}, []),
+			setThinkingState(v);
+			writeStored(thinkingKey, v);
+		},
+		[thinkingKey],
+	);
+	useDictationTarget(
+		useCallback((t: string) => setThinking(joinDictation(thinkingRef.current, t)), [setThinking]),
 		dictationClaim,
 	);
 
 	const send = (submission: CodeSubmission) => {
 		const text = renderExerciseSubmission(input.code, submission);
 		onSubmit(buildAnswer(qd, { text, thinking: thinkingRef.current.trim() || undefined }, "exercise"));
+		writeStored(thinkingKey, "");
 	};
 	const submitCode = async (submission: CodeSubmission) => {
 		if (compactionRunning) return;
@@ -99,7 +126,7 @@ export function ExerciseDockForm({
 				<div className="pb-2" data-testid="exercise-code">
 					<CodeExercisePanel
 						exercise={input.code}
-						draftKey={toolCallId}
+						draftKey={draftKey}
 						onSubmit={submitCode}
 						submitLabel="Submit"
 						disabled={compactionRunning}
@@ -113,10 +140,7 @@ export function ExerciseDockForm({
 				<div className="px-2.5 pt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">YOUR THINKING</div>
 				<textarea
 					value={thinking}
-					onChange={(e) => {
-						thinkingRef.current = e.target.value;
-						setThinking(e.target.value);
-					}}
+					onChange={(e) => setThinking(e.target.value)}
 					onKeyDown={(e) => {
 						if (e.key === "Escape" && onEscape) {
 							e.preventDefault();

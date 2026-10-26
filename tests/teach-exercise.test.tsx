@@ -177,6 +177,22 @@ const props = (el: Element) => (el as unknown as Record<string, Record<string, (
 const settle = () => act(async () => void (await new Promise((r) => setTimeout(r, 5))));
 
 describe("the exercise dock: submit = the graded answer", () => {
+	it("the thinking survives under the draft key — the exercise re-posed after an ask gets it back", async () => {
+		const input = parseExerciseInput(valid)!;
+		host = dom.document.createElement("div");
+		dom.document.body.appendChild(host);
+		root = createRoot(host);
+		await act(async () => root!.render(<ExerciseDockForm toolCallId="tc-a" input={input} onSubmit={() => {}} />));
+		await act(async () => props(host!.querySelector("[data-testid='exercise-thinking-field'] textarea")!).onChange!({ target: { value: "a/b truncates" } }));
+		assert.equal(storage.get("lh-code-thinking:tc-a"), "a/b truncates", "kept under the draft key");
+		await act(async () => root!.unmount());
+		// The teacher poses it again as tc-b; exerciseDraftKey hands it tc-a's key.
+		root = createRoot(host);
+		await act(async () => root!.render(<ExerciseDockForm toolCallId="tc-b" draftKey="tc-a" input={input} onSubmit={() => {}} />));
+		assert.equal((props(host!.querySelector("[data-testid='exercise-thinking-field'] textarea")!) as unknown as { value: string }).value, "a/b truncates");
+		storage.delete("lh-code-thinking:tc-a");
+	});
+
 	it("predict: lock → run → submit sends kind exercise with the submission, the thinking and the commitment", async () => {
 		const sent: QuestionAnswerData[] = [];
 		host = dom.document.createElement("div");

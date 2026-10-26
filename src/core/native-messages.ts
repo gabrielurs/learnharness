@@ -746,6 +746,53 @@ export function danglingQuestionOf(
 	return null;
 }
 
+/** Unanswered question calls on the newest assistant message (upstream
+ *  PR #138). Zero when that message has none — older messages are not
+ *  consulted, matching danglingQuestionOf. ask-before-check requires
+ *  exactly one: a learner message cannot sit ahead of a sibling's result. */
+export function danglingQuestionCount(messages: readonly LhMessage[]): number {
+	for (let mi = messages.length - 1; mi >= 0; mi--) {
+		const m = messages[mi]!;
+		if ((m as { role?: string }).role !== "assistant") continue;
+		const assistant = m as AssistantMessage & { id: string };
+		const answered = resultIdsFrom(messages.slice(mi + 1));
+		let n = 0;
+		for (const block of assistant.content) {
+			if (block.type !== "toolCall") continue;
+			if (!(QUESTION_TOOLS as readonly string[]).includes(block.name)) continue;
+			if (answered.has(block.id)) continue;
+			n++;
+		}
+		return n;
+	}
+	return 0;
+}
+
+/** The draft key of an exercise call (owner, 2026-10-26): an exercise
+ *  the learner set aside to ask something (a notYet result) hands its
+ *  drafts to the NEXT exercise call — the teacher posing it again — so
+ *  his code survives the question. Chains through repeated asks; any
+ *  other exercise call keys by its own id. Pure, from the record. */
+export function exerciseDraftKey(messages: readonly LhMessage[], toolCallId: string): string {
+	const calls: string[] = [];
+	const notYet = new Set<string>();
+	for (const m of messages) {
+		const role = (m as { role?: string }).role;
+		if (role === "assistant") {
+			for (const block of (m as AssistantMessage).content) {
+				if (block.type === "toolCall" && block.name === "exercise") calls.push(block.id);
+			}
+		} else if (role === "toolResult") {
+			const result = m as ToolResultMessage;
+			if (result.toolName === "exercise" && (result.details as { notYet?: unknown } | null)?.notYet === true) notYet.add(result.toolCallId);
+		}
+	}
+	let i = calls.indexOf(toolCallId);
+	if (i === -1) return toolCallId;
+	while (i > 0 && notYet.has(calls[i - 1]!)) i--;
+	return calls[i]!;
+}
+
 /** Did this probe_done result CONCLUDE the probe? Not an error, and not
  *  the tool's own refusal ({ok:false} — "a question is still open",
  *  "already concluded"), which reaches the record as a plain result. */

@@ -76,7 +76,7 @@ type CodeRunResult = import("../src/core/contracts/code.ts").CodeRunResult;
 type CodeSubmission = import("../src/core/contracts/code.ts").CodeSubmission;
 const { codeHoles, holeRanges, moveToHole } = await import("../components/code-holes.ts");
 const { problemInputObject } = await import("../src/agent/tools/practice.ts");
-const { CodeExercisePanel } = await import("../components/code-exercise.tsx");
+const { CodeExercisePanel, exerciseWorkSoFar } = await import("../components/code-exercise.tsx");
 
 const TEST = { stdin: "", expected: "1" };
 const ran = (stdout: string, over: Partial<CodeRunResult["cases"][number]> = {}): CodeRunResult => ({
@@ -311,5 +311,28 @@ describe("fill panel: gaps only, and the draft keeps them", () => {
 		const again = editorView();
 		assert.equal(again.state.doc.toString(), "int main(){ return 1+1; }");
 		assert.deepEqual(holeRanges(again.state)[0], { from: gap.from, to: gap.from + 3 });
+	});
+});
+
+describe("the work so far, read from the drafts (ask-before-check, owner 2026-10-26)", () => {
+	it("write/fix: the code, unless it still equals the starter; predict: the prediction; fill: the filled doc", () => {
+		storage.clear();
+		const fix: CodeExercise = { language: "c", kind: "fix", starterCode: "int main(void){return 1;}\n", tests: [{ stdin: "", expected: "" }] };
+		assert.equal(exerciseWorkSoFar(fix, "k1"), undefined, "no draft yet");
+		storage.set("lh-code-draft:k1", fix.starterCode!);
+		assert.equal(exerciseWorkSoFar(fix, "k1"), undefined, "untouched starter is not work");
+		storage.set("lh-code-draft:k1", "int main(void){return 0;}\n");
+		assert.equal(exerciseWorkSoFar(fix, "k1"), "int main(void){return 0;}\n");
+
+		const predict: CodeExercise = { language: "c", kind: "predict", starterCode: "int main(void){}" };
+		assert.equal(exerciseWorkSoFar(predict, "k2"), undefined);
+		storage.set("lh-code-predict:k2", JSON.stringify({ text: "3 1", locked: false }));
+		assert.equal(exerciseWorkSoFar(predict, "k2"), "Predicted output so far:\n3 1");
+
+		const fill: CodeExercise = { language: "c", kind: "fill", starterCode: `int x = ${CODE_HOLE};`, tests: [{ stdin: "", expected: "" }] };
+		storage.set("lh-code-draft:k3:fill", JSON.stringify({ doc: splitHoles(fill.starterCode!).doc, holes: [] }));
+		assert.equal(exerciseWorkSoFar(fill, "k3"), undefined, "empty gaps are not work");
+		storage.set("lh-code-draft:k3:fill", JSON.stringify({ doc: "int x = 42;", holes: [] }));
+		assert.equal(exerciseWorkSoFar(fill, "k3"), "int x = 42;");
 	});
 });

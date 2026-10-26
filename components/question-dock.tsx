@@ -100,6 +100,9 @@ export interface QuestionDockProps {
 	 *  and say so in the hint row. The server registry is the real gate;
 	 *  this is the affordance. */
 	compactionRunning?: boolean;
+	/** An exercise's code-draft key (exerciseDraftKey): its own call id, or
+	 *  the call it re-poses after an ask-before-check. */
+	exerciseDraftKey?: string;
 }
 
 export function QuestionDock({
@@ -116,6 +119,7 @@ export function QuestionDock({
 	phase = "probe",
 	dictationClaim = true,
 	compactionRunning = false,
+	exerciseDraftKey,
 }: QuestionDockProps) {
 	// The probe-phase names (owner, 2026-10-09) canonicalize onto their
 	// teach twins for every dock concern — parse dispatch, labels, kinds:
@@ -169,6 +173,7 @@ export function QuestionDock({
 				{canonical === "exercise" ? (
 					<ExerciseDockForm
 						toolCallId={toolCallId}
+						draftKey={exerciseDraftKey}
 						input={parsed as ExerciseToolInput}
 						onSubmit={onSubmit}
 						onEscape={onEscape}

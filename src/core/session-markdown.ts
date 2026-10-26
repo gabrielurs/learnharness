@@ -30,6 +30,7 @@ import {
 	userFacingTextOf,
 } from "./native-messages.ts";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
+import { normalizeQuizType } from "./question-core.ts";
 
 /** The practice join context (owner-approved, 2026-10-06 export round):
  *  practice tool RESULTS are acks — the statement, outcome, and verdict
@@ -82,6 +83,7 @@ function toolResultBody(result: ToolResultMessage, ctx?: MarkdownContext): { hea
 				answers: Array<string | { label?: string }>;
 				other: string;
 				dismissed: boolean;
+				notYet: boolean;
 		  }>
 		| undefined;
 
@@ -107,7 +109,11 @@ function toolResultBody(result: ToolResultMessage, ctx?: MarkdownContext): { hea
 						: "Recall check"; // explain — the teach free-recall name
 		const question = typeof out?.questionText === "string" && out.questionText ? out.questionText : "(no question text)";
 		const body = [`**Q:** ${question}`];
-		if (out?.dismissed === true) body.push("The learner skipped this check.");
+		// Asked before taking it (upstream PR #138) — the next message is
+		// his question; the same question comes back after the answer.
+		const predicted = normalizeQuizType(ctx?.calls.get(result.toolCallId)?.args?.type) === "predict";
+		if (out?.notYet === true) body.push(predicted ? "The learner asked something before taking this prediction." : "The learner asked something before taking this check.");
+		else if (out?.dismissed === true) body.push("The learner skipped this check.");
 		else if (out?.dontKnow === true) body.push("The learner did not know.");
 		else if (out?.correct === true) body.push("The learner answered correctly.");
 		else if (out?.correct === false) body.push("The learner answered incorrectly.");
@@ -121,7 +127,10 @@ function toolResultBody(result: ToolResultMessage, ctx?: MarkdownContext): { hea
 	if (result.toolName === "exercise") {
 		const question = typeof out?.questionText === "string" && out.questionText ? out.questionText : "(no exercise text)";
 		const body = [`**Exercise:** ${question}`];
-		if (out?.dismissed === true) body.push("The learner skipped this exercise.");
+		if (out?.notYet === true) {
+			body.push("The learner asked something before finishing this exercise.");
+			if (typeof out.text === "string" && out.text.trim()) body.push(`His code so far:\n\n${out.text.trim()}`);
+		} else if (out?.dismissed === true) body.push("The learner skipped this exercise.");
 		else if (typeof out?.text === "string" && out.text.trim()) body.push(`The learner's submission:\n\n${out.text.trim()}`);
 		if (thinking) body.push(`*(his thinking: ${thinking})*`);
 		return { heading: "Exercise", body };

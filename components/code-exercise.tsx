@@ -67,6 +67,28 @@ function readJson<T>(key: string): T | null {
 	}
 }
 
+/** What the learner has done on an exercise so far, from its drafts (an
+ *  ask-before-check carries it to the teacher — owner, 2026-10-26): his
+ *  code, or a predict's prediction. Undefined when nothing was started
+ *  (the draft still equals the starter, or there is none). */
+export function exerciseWorkSoFar(exercise: CodeExercise, draftKey: string): string | undefined {
+	if (typeof window === "undefined") return undefined;
+	const kind = exerciseKind(exercise);
+	const starter = exercise.starterCode ?? "";
+	if (kind === "predict") {
+		const saved = readJson<{ text?: unknown }>(`lh-code-predict:${draftKey}`);
+		const text = typeof saved?.text === "string" ? saved.text.trim() : "";
+		return text ? `Predicted output so far:\n${text}` : undefined;
+	}
+	const doc =
+		kind === "fill"
+			? readJson<FillDraft>(`lh-code-draft:${draftKey}:fill`)?.doc
+			: readDraft(`lh-code-draft:${draftKey}`);
+	if (typeof doc !== "string" || !doc.trim()) return undefined;
+	if (doc === starter || (kind === "fill" && doc === splitHoles(starter).doc)) return undefined;
+	return doc;
+}
+
 export function CodeExercisePanel({
 	exercise,
 	draftKey,
