@@ -117,9 +117,29 @@ export function resetDockerAvailability(): void {
  *  absent — both mean: fall back to the local sandbox. */
 export class DockerImageMissingError extends Error {}
 
-/** Docker reported it cannot reach the daemon (quit after the probe). */
+/** Docker's OWN stderr says the daemon is unreachable. Only used on output
+ *  that comes from docker itself (run, image inspect/pull) — NEVER on a
+ *  `docker exec` whose stderr is the compiler's or the program's, which the
+ *  learner controls (a Linux-only `#error connection refused` must not force
+ *  a downgrade to the host sandbox — audit, 2026-10-26). */
 function daemonGone(stderr: string): boolean {
 	return /cannot connect to the docker daemon|failed to connect to the docker|the daemon is running|is the docker daemon running|error during connect|connect: no such file|connection refused/i.test(stderr);
+}
+
+/** A FRESH daemon reachability probe (bypasses the TTL cache), to tell a
+ *  real `docker exec` infrastructure failure from a compile/run result. */
+async function daemonReachable(): Promise<boolean> {
+	const r = await run("docker", ["version", "--format", "{{.Server.Version}}"], { timeoutMs: 5_000 });
+	return r.exitCode === 0 && !r.timedOut && r.stdout.trim().length > 0;
+}
+
+/** A `docker exec` failed at the DOCKER level (not the inner command): exit
+ *  125 (daemon/exec error) or no exit code, AND the daemon is now
+ *  unreachable. The inner compiler/program uses its own exit codes (clang
+ *  errors are 1), which this never treats as a docker failure. */
+async function execHitDockerFailure(exitCode: number | null): Promise<boolean> {
+	if (exitCode !== 125 && exitCode !== 126 && exitCode !== null) return false;
+	return !(await daemonReachable());
 }
 
 /** Ensure the pinned image is present (pull once). Throws if it cannot be
@@ -180,9 +200,11 @@ export async function runCodeInDocker(request: CodeRunRequest): Promise<CodeRunR
 			{ timeoutMs: CODE_LIMITS.compileTimeoutMs + 5_000 },
 		);
 		// The daemon vanished between start and exec (quit mid-run): fall back.
-		if (compiled.exitCode !== 0 && daemonGone(compiled.stderr)) {
+		// Decided by docker's exit code + a fresh probe, NEVER the compiler's
+		// stderr (the learner controls it via #error).
+		if (compiled.exitCode !== 0 && (await execHitDockerFailure(compiled.exitCode))) {
 			resetDockerAvailability();
-			throw new DockerImageMissingError(`the Docker daemon became unreachable: ${compiled.stderr.trim().slice(0, 200)}`);
+			throw new DockerImageMissingError("the Docker daemon became unreachable during compile");
 		}
 		const compileOk = compiled.exitCode === 0 && !compiled.timedOut;
 		const compile = {
@@ -202,6 +224,13 @@ export async function runCodeInDocker(request: CodeRunRequest): Promise<CodeRunR
 				["exec", "-i", containerId, "timeout", "-s", "KILL", String(sec), "/work/main"],
 				{ stdin: test.stdin, timeoutMs: CODE_LIMITS.runTimeoutMs + 2_000 },
 			);
+			// The daemon died mid-loop: fall back (runCode re-runs the whole
+			// submission locally). Decided by exit code + a fresh probe, so a
+			// program that merely returns 125/126 is not mistaken for it.
+			if (r.exitCode !== 0 && (await execHitDockerFailure(r.exitCode))) {
+				resetDockerAvailability();
+				throw new DockerImageMissingError("the Docker daemon became unreachable during a test");
+			}
 			// `timeout` exits 137 (128+SIGKILL) when it kills the program.
 			const timedOut = r.timedOut || r.exitCode === 137;
 			const graded = test.expected !== undefined;

@@ -51,6 +51,34 @@ describe("docker runner", { skip: available ? false : "no Docker daemon" }, () =
 		assert.equal(c.timedOut, true);
 	});
 
+	it("learner code cannot force a downgrade to the host sandbox (audit, 2026-10-26)", async () => {
+		// A Linux-only #error makes clang echo "connection refused"; classifying
+		// the fallback from compiler stderr used to run this on the macOS host.
+		const src = [
+			"#ifdef __linux__",
+			"#error connection refused",
+			"#endif",
+			"#include <stdio.h>",
+			'int main(void){',
+			"#ifdef __APPLE__",
+			'  puts("ran on macOS host");',
+			"#else",
+			'  puts("ran in docker");',
+			"#endif",
+			"  return 0;}",
+		].join("\n");
+		const r = await runCodeInDocker({ language: "c", source: src, stdin: "" });
+		// It stays in Docker (Linux): the #error fails the compile, no host run.
+		assert.equal(r.compile.ok, false);
+		assert.deepEqual(r.cases, []);
+	});
+
+	it("a program returning 125/126 is not mistaken for a docker failure", async () => {
+		const r = await runCodeInDocker({ language: "c", source: "int main(void){ return 125; }", stdin: "" });
+		assert.equal(r.compile.ok, true);
+		assert.equal(r.cases[0]!.exitCode, 125);
+	});
+
 	it("isolation: no host files, no host env, no network, no writes, bounded forks", async () => {
 		// R1: the host filesystem is not mounted.
 		const host = await run('#include <stdio.h>\nint main(void){ printf("%s\\n", fopen("/etc/hostname","r") ? "has-container-etc" : "none"); return 0; }');
