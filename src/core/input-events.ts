@@ -217,7 +217,7 @@ export function inputAppends(
 		case "continue":
 			return dismissalConclusion(record);
 		case "retry":
-			if (!trailingFailure(record.messages)) throw new ChatInputError("retry input: the session's last turn did not fail");
+			assertRetryable(record.messages);
 			return [];
 		case "thinking": {
 			const active = activeProblemOf(record.messages);
@@ -263,19 +263,47 @@ function isFailedAssistant(m: LhMessage): boolean {
 	return (m as { role?: string }).role === "assistant" && (m as { stopReason?: string }).stopReason === "error";
 }
 
-/** The error text when the record ENDS on a failed model call (the turn
- *  died: nothing will continue it on its own), else null. */
-export function trailingFailure(messages: readonly LhMessage[]): string | null {
-	const last = messages.at(-1);
-	if (!last || !isFailedAssistant(last)) return null;
-	return (last as { errorMessage?: string }).errorMessage || "The model call failed.";
+/** Markers that can land AFTER a failed call and are never model input
+ *  (upstream PR #184): persistTurn's plan block (plan_init succeeded, the
+ *  next call failed) and the settle kick's compaction marker. */
+const TRAILING_MARKERS: readonly string[] = ["plan-block", "compaction"];
+
+/** Walk back from the end over failed assistants and trailing markers:
+ *  the failures, and the message the walk stops at. */
+function failedTail(messages: readonly LhMessage[]): { failures: Set<LhMessage>; before: LhMessage | undefined } {
+	const failures = new Set<LhMessage>();
+	let i = messages.length - 1;
+	for (; i >= 0; i--) {
+		const m = messages[i]!;
+		if (isFailedAssistant(m)) failures.add(m);
+		else if (!((m as { role?: string }).role === "custom" && TRAILING_MARKERS.includes((m as { customType?: string }).customType ?? ""))) break;
+	}
+	return { failures, before: messages[i] };
 }
 
-/** The record a retry runs from: every failed assistant message at the
- *  tail dropped (pi cannot continue from an assistant message, and the
- *  failed one carries nothing worth keeping). */
+/** The error text when the record ENDS on a failed model call (the turn
+ *  died: nothing will continue it on its own), else null. UI-only markers
+ *  after the failure do not hide it. */
+export function trailingFailure(messages: readonly LhMessage[]): string | null {
+	const { failures } = failedTail(messages);
+	const latest = [...failures][0];
+	if (!latest) return null;
+	return (latest as { errorMessage?: string }).errorMessage || "The model call failed.";
+}
+
+/** A retry needs a failure to drop AND an input to run from once it is
+ *  gone (pi cannot continue from an assistant message) — else the honest
+ *  400, before compaction or any turn effect (upstream PR #184). */
+export function assertRetryable(messages: readonly LhMessage[]): void {
+	const { failures, before } = failedTail(messages);
+	if (failures.size === 0) throw new ChatInputError("retry input: the session's last turn did not fail");
+	if (!before || (before as { role?: string }).role === "assistant") throw new ChatInputError("retry input: no input left to run the turn from");
+}
+
+/** The record a retry runs from: the failed assistant message(s) at the
+ *  tail dropped (the failed one carries nothing worth keeping); the
+ *  markers after them stay. */
 export function withoutTrailingFailures(messages: readonly LhMessage[]): LhMessage[] {
-	let end = messages.length;
-	while (end > 0 && isFailedAssistant(messages[end - 1]!)) end--;
-	return messages.slice(0, end);
+	const { failures } = failedTail(messages);
+	return failures.size === 0 ? [...messages] : messages.filter((m) => !failures.has(m));
 }

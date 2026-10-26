@@ -55,6 +55,7 @@ import {
 	ChatInputError,
 	inputAppends,
 	withoutTrailingFailures,
+	assertRetryable,
 	parseChatInput,
 	type TurnInput,
 } from "../core/input-events.ts";
@@ -222,6 +223,18 @@ export async function handleChatInput(
 		const envelope = providerKeyMissingEnvelope(conversation.provider, ["strong"]);
 		console.info(`[chat ${chatId}] turn refused — ${JSON.stringify(envelope)}`);
 		return Response.json(envelope, { status: 503 });
+	}
+
+	// THE RETRY GATE (upstream PR #184): a retry with nothing to retry
+	// refuses here, BEFORE compaction and beginTurn — no effects. The
+	// appends below re-validate on the record compaction re-reads.
+	if (input.type === "retry") {
+		try {
+			assertRetryable(record.messages);
+		} catch (err) {
+			if (err instanceof ChatInputError) return Response.json({ error: err.message }, { status: 400 });
+			throw err;
+		}
 	}
 
 	// THE COMPACTION GATE (owner round 14, 2026-10-05 — the structural
