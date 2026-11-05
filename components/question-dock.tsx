@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { finishDictation, isDictationActive, joinDictation, useDictationTarget } from "@/components/dictation";
 import { useEnterSubmits } from "@/components/enter-submits";
 import { ToolContentResponse } from "@/components/ai-elements/message";
+import { QuestionPreview } from "@/components/question-preview";
 import { cn } from "@/lib/utils";
 import {
 	buildAnswer,
@@ -223,7 +224,6 @@ export function QuestionDockBar({
 	 *  label Probe/Recall — the phase boundary visible in the composer. */
 	toolLabel?: string;
 }) {
-	const teaser = question.replace(/\s+/g, " ").trim();
 	if (variant === "reveal") {
 		return (
 			<button
@@ -237,9 +237,9 @@ export function QuestionDockBar({
 				</span>
 				<span className="min-w-0 flex-1">
 					<span className="block text-sm font-medium">Check your understanding</span>
-					<ToolContentResponse className="block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-muted-foreground [&>p]:m-0 [&>p]:inline [&_.katex-display]:m-0 [&_.katex-display]:inline">
-						{teaser}
-					</ToolContentResponse>
+					<span className="block text-xs text-muted-foreground">
+						<QuestionPreview>{question}</QuestionPreview>
+					</span>
 				</span>
 				<span className="flex shrink-0 items-center gap-1 text-xs font-medium text-primary">
 					Open <ChevronRightIcon className="size-3.5" />
@@ -259,10 +259,8 @@ export function QuestionDockBar({
 							toolLabel ??
 							(toolName === "quiz" ? "Check" : toolName === "explain" ? "Explain" : toolName === "exercise" ? "Exercise" : "Question")}
 			</span>
-			<span className="min-w-0 flex-1">
-				<ToolContentResponse className="block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-muted-foreground [&>p]:m-0 [&>p]:inline [&_.katex-display]:m-0 [&_.katex-display]:inline">
-					{teaser}
-				</ToolContentResponse>
+			<span className="min-w-0 flex-1 text-muted-foreground">
+				<QuestionPreview>{question}</QuestionPreview>
 			</span>
 			<span className="flex shrink-0 items-center gap-1 text-xs font-medium">
 				Answer <ArrowDownIcon className="size-3.5" />
