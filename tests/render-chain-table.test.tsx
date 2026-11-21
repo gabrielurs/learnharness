@@ -79,6 +79,7 @@ const BASE = {
 	onToggleChain: () => {},
 	onToggleNodes: () => {},
 	onClear: () => {},
+	selectMode: false,
 	onGenerate: () => {},
 	onDelete: () => {},
 	onClose: () => {},
@@ -282,6 +283,17 @@ describe("ChainTableBody — the floating selection bar (never shifts layout)", 
 		assert.ok(html.includes("lucide-trash-2"), "the trash icon");
 		// the fence is before Delete in the DOM (right end of the bar)
 		assert.ok(html.indexOf('chain-danger-divider"') < html.indexOf('chain-delete"'));
+	});
+
+	it("Delete and practice Done have matching top/bottom/right pill insets and fully rounded contours", () => {
+		for (const [selectMode, action] of [[false, "chain-delete"], [true, "chain-practice-done"]] as const) {
+			const html = render({ selectMode, selection: new Set(["a"]) });
+			const bar = html.match(/<div[^>]*data-testid="chain-selection-bar"[^>]*>/)?.[0] ?? "";
+			const button = html.match(new RegExp(`<button[^>]*data-testid="${action}"[^>]*>`))?.[0] ?? "";
+			assert.match(bar, /rounded-full/); assert.match(button, /rounded-full/);
+			assert.match(bar, /py-2 pl-4 pr-2/, "keep text inset, match right inset to the vertical inset");
+			assert.equal(bar.includes(" px-4 "), false);
+		}
 	});
 
 	it("the Delete rides ONLY with a selection — no bar, no kill switch", () => {
