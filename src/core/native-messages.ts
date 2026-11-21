@@ -622,8 +622,9 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 	// THE COMPACTION CUT (owner round 14, 2026-10-05): the ACTIVE marker
 	// (the newest — chained compactions rule last) names the first kept
 	// message; everything before it is replaced by the marker's content
-	// (header + summary) rendered ONCE, up top. The marker itself is then
-	// skipped in place — it must never render twice. A cut naming a
+	// (header + summary) rendered ONCE, up top. All compaction markers
+	// in the retained tail are then skipped, including older summaries
+	// whose stored positions still lie after the cut. A cut naming a
 	// missing id degrades honestly (everything renders — never throw).
 	const lhMessages = messages as readonly LhMessage[];
 	const active = activeCompactionOf(lhMessages);
