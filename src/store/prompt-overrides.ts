@@ -74,6 +74,7 @@ export const promptOverrides: PromptOverrideStore = {
 		if (!isValidSegmentPath(segmentPath)) return;
 		const file = overrideFileFor(segmentPath);
 		fs.mkdirSync(path.dirname(file), { recursive: true });
+		// allowInPlaceFallback: if Windows keeps the rename locked, save in place (not atomic)
 		writeFileAtomicSync(file, text, { allowInPlaceFallback: true });
 	},
 

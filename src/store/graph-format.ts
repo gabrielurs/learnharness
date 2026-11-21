@@ -57,5 +57,6 @@ export function assertGraphFormat(): void {
 export function ensureGraphFormat(): void {
 	if (stampedVersion() !== null) return;
 	fs.mkdirSync(path.dirname(GRAPH_FORMAT_FILE), { recursive: true });
+	// allowInPlaceFallback: if Windows keeps the rename locked, save in place (not atomic)
 	writeFileAtomicSync(GRAPH_FORMAT_FILE, JSON.stringify({ version: CURRENT_GRAPH_FORMAT_VERSION }, null, "\t") + "\n", { allowInPlaceFallback: true });
 }
