@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { Type } from "typebox";
 import { normalizeContext, type AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { renderBridgePrompt } from "../src/agent/claude-code/transcript.ts";
-import { BridgeAssembler, bridgeArgs, childEnv, deliveredSinceLearner, findClaudeBinary, mcpToolList, CLAUDE_BIN_ENV } from "../src/agent/claude-code/cli.ts";
+import { BridgeAssembler, bridgeArgs, childEnv, deliveredSinceLearner, fallbackDirs, findClaudeBinary, mcpToolList, CLAUDE_BIN_ENV } from "../src/agent/claude-code/cli.ts";
 import { MCP_SERVER_SOURCE } from "../src/agent/claude-code/mcp-server.ts";
 import { CLAUDE_CODE_PROVIDER } from "../src/agent/claude-code/provider.ts";
 import { piEngineForSpec, piModels } from "../src/agent/models.ts";
@@ -425,6 +425,14 @@ describe("claude-code CLI seam", () => {
 
 	it("an override pointing at a missing binary means not installed", () => {
 		assert.equal(findClaudeBinary({ [CLAUDE_BIN_ENV]: "/nonexistent/claude", PATH: "" }), undefined);
+	});
+
+	it("Nix profile dirs come after the known dirs: per-user only when USER is set, then ~/.nix-profile, then system", () => {
+		const home = homedir();
+		const known = [path.join(home, ".local", "bin"), path.join(home, ".claude", "local"), "/opt/homebrew/bin", "/usr/local/bin"];
+		const nix = [path.join(home, ".nix-profile", "bin"), "/run/current-system/sw/bin"];
+		assert.deepEqual(fallbackDirs({ USER: "u" }), [...known, "/etc/profiles/per-user/u/bin", ...nix]);
+		assert.deepEqual(fallbackDirs({}), [...known, ...nix]);
 	});
 
 	it("prices Claude Code usage at zero (subscription), not unpriced", () => {

@@ -53,9 +53,20 @@ const BIN_NAMES = process.platform === "win32" ? ["claude.exe", "claude.cmd", "c
 
 /** Install locations checked after PATH — a packaged Electron app starts
  *  with a minimal PATH that misses the user's shell additions. */
-function fallbackDirs(): string[] {
+export function fallbackDirs(env: Record<string, string | undefined>): string[] {
 	const home = homedir();
-	return [path.join(home, ".local", "bin"), path.join(home, ".claude", "local"), "/opt/homebrew/bin", "/usr/local/bin"];
+	return [
+		path.join(home, ".local", "bin"),
+		path.join(home, ".claude", "local"),
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		// Nix (home-manager with useUserPackages, standalone home-manager /
+		// nix profile, NixOS/nix-darwin system packages). These are only on
+		// PATH after shell init, so desktop launches never see them.
+		...(env.USER ? [path.join("/etc/profiles/per-user", env.USER, "bin")] : []),
+		path.join(home, ".nix-profile", "bin"),
+		"/run/current-system/sw/bin",
+	];
 }
 
 function isExecutable(file: string): boolean {
@@ -72,7 +83,7 @@ function isExecutable(file: string): boolean {
 export function findClaudeBinary(env: Record<string, string | undefined> = process.env): string | undefined {
 	const override = env[CLAUDE_BIN_ENV];
 	if (override) return isExecutable(override) ? override : undefined;
-	const dirs = [...(env.PATH ?? "").split(path.delimiter).filter(Boolean), ...fallbackDirs()];
+	const dirs = [...(env.PATH ?? "").split(path.delimiter).filter(Boolean), ...fallbackDirs(env)];
 	for (const dir of dirs) {
 		for (const name of BIN_NAMES) {
 			const candidate = path.join(dir, name);
