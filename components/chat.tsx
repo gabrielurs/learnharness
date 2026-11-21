@@ -38,6 +38,7 @@ import {
 	messageAnchorId,
 	textPartMessageId,
 	kbdEventForAction as kbdEventForChat,
+	endsInFailedTurn,
 	trailingFailure,
 	type ChatInput,
 	type CodeExercise,
@@ -165,6 +166,18 @@ export function parseProviderKeyRefusal(message: string | undefined): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/** Retry sends no composer text. Its refusal must not resurrect the draft
+ * from an earlier, already-durable text send over today's unsent composer.
+ * Retire that fallback synchronously, never when the async Retry settles:
+ * a later ordinary send may own a new recovery draft by then. */
+export function retryFailedResponse(
+	send: (input: ChatInput) => void,
+	submittedDraft: { current: string | null },
+): void {
+	submittedDraft.current = null;
+	void send({ type: "retry" });
 }
 
 /** useLayoutEffect that is silent during SSR (client components still render on the server in Next). */
@@ -705,9 +718,10 @@ export function Chat({
 	const busy = localStream || turnInFlight;
 	/** The record ends on a failed model call → the Retry affordance. */
 	const failedTurn = trailingFailure(nativeMessages);
+	// Retry offered only where the server accepts it (same walk as retryDrops).
+	const retryable = endsInFailedTurn(nativeMessages);
 	const busyRef = useRef(busy);
 	busyRef.current = busy;
-
 	// The attach handoff (stream-reattach wave): the moment a resumed
 	// stream takes over the rendering — the SDK left "ready", so
 	// submitted/streaming means chunks are flowing — localStream covers
@@ -1649,13 +1663,13 @@ export function Chat({
 									<span className="min-w-0 flex-1">Something went wrong: {error?.message ?? failedTurn}</span>
 									{/* Retry (fork, 2026-10-24): a failed model call strands the
 									    turn — re-run it from the learner's last input. */}
-									{failedTurn && !busy && (
+									{retryable && !busy && (
 										<button
 											type="button"
 											data-testid="retry-turn"
 											onClick={() => {
 												clearError();
-												void send({ type: "retry" });
+												retryFailedResponse(send, draftRef);
 											}}
 											className="shrink-0 rounded-md border border-destructive/50 px-2.5 py-1 font-ui text-xs font-medium text-destructive transition-colors hover:bg-destructive/20"
 										>

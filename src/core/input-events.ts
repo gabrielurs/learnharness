@@ -16,6 +16,9 @@
  *   continue — run the next turn on the current record (mount
  *             continuations, job-settle re-syncs: the record ends at an
  *             answered question with no teacher reaction yet).
+ *   retry   — retry a failed model response (issue #110), without new
+ *             input. Failed attempts stay in the record; only the retry's
+ *             temporary agent history omits the trailing failures.
  *
  * (The plan verdict input died 2026-09-26 with the verdict itself — the
  * learner's post-plan reply is a natural text message.)
@@ -52,9 +55,9 @@ export type ChatInput =
 	| { type: "text"; text: string }
 	| { type: "answer"; toolCallId: string; answer: QuestionAnswerData }
 	| { type: "continue" }
-	/** Re-run a turn whose model call FAILED (fork, 2026-10-24): the failed
-	 *  assistant message(s) at the record's tail are dropped and the turn
-	 *  runs again from the input that preceded them. */
+	/** Re-run a turn whose model call FAILED: the failed assistant message(s)
+	 *  at the record's tail stay in the record; only the temporary agent
+	 *  history omits them, so the turn runs again from the input before them. */
 	| { type: "retry" }
 	/** The practice dock's two buttons (owner, 2026-10-04): the learner's
 	 *  thinking on the ACTIVE problem — one lane (owner 2026-10-05):
@@ -243,6 +246,9 @@ export function inputAppends(
 		case "continue":
 			return dismissalConclusion(record);
 		case "retry":
+			// Refused early when nothing can be retried (14f2017d). The input
+			// already landed write-ahead; retryDrops affects only the temporary
+			// agent history, so nothing new appends here.
 			assertRetryable(record.messages);
 			return [];
 		case "thinking": {
@@ -287,6 +293,40 @@ export function inputAppends(
 	}
 }
 
+/** The failure owning the ephemeral banner. Plan presentation and
+ * compaction do not resolve an error; substantive later input/output does.
+ * This is deliberately broader than Retry eligibility below. */
+export function failedResponseAtEnd(messages: readonly LhMessage[]): Extract<LhMessage, { role: "assistant" }> | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i]!;
+		if (m.role === "custom" && (m.customType === "plan-block" || m.customType === "compaction")) continue;
+		return m.role === "assistant" && m.stopReason === "error" ? m : undefined;
+	}
+	return undefined;
+}
+
+/** Does the record end in a failure with input that can be retried?
+ * Same walk as assertRetryable (failedTailThroughMarkers), so the Retry
+ * button and the server's 400 agree. Aborts are deliberate stops. */
+export function endsInFailedTurn(messages: readonly LhMessage[]): boolean {
+	const { failures, before } = failedTailThroughMarkers(messages);
+	return failures.size > 0 && before !== undefined && before.role !== "assistant";
+}
+
+/** The ids omitted ONLY from the retry's temporary agent history.
+ * Failed attempts (including partial text and their ids) stay on disk.
+ * Pi's provider conversion already skips error/aborted responses, but
+ * continue() rejects an assistant tail BEFORE conversion. Omitting the
+ * trailing failures lets that continuation start from the saved input or
+ * completed tool results without replaying tools or resubmitting input.
+ * Plan blocks and compaction markers may follow the failure and stay. */
+export function retryDrops(messages: readonly LhMessage[]): Set<string> {
+	const { failures, before } = failedTailThroughMarkers(messages);
+	if (failures.size === 0) throw new ChatInputError("retry input requires a failed turn to retry");
+	if (!before || before.role === "assistant") throw new ChatInputError("retry input leaves no input to continue from");
+	return new Set([...failures].map((m) => m.id));
+}
+
 /** The deferred conclude synthesis (owner ruling, 2026-10-04): a
  *  problem-dismissal marker waits for the user's next input — the pair
  *  (synthetic conclude call + ack) rides ahead of it, so the agent reads
@@ -315,7 +355,7 @@ const TRAILING_MARKERS: readonly string[] = ["plan-block", "compaction"];
 
 /** Walk back from the end over failed assistants and trailing markers:
  *  the failures, and the message the walk stops at. */
-function failedTail(messages: readonly LhMessage[]): { failures: Set<LhMessage>; before: LhMessage | undefined } {
+function failedTailThroughMarkers(messages: readonly LhMessage[]): { failures: Set<LhMessage>; before: LhMessage | undefined } {
 	const failures = new Set<LhMessage>();
 	let i = messages.length - 1;
 	for (; i >= 0; i--) {
@@ -330,7 +370,7 @@ function failedTail(messages: readonly LhMessage[]): { failures: Set<LhMessage>;
  *  died: nothing will continue it on its own), else null. UI-only markers
  *  after the failure do not hide it. */
 export function trailingFailure(messages: readonly LhMessage[]): string | null {
-	const { failures } = failedTail(messages);
+	const { failures } = failedTailThroughMarkers(messages);
 	const latest = [...failures][0];
 	if (!latest) return null;
 	return (latest as { errorMessage?: string }).errorMessage || "The model call failed.";
@@ -340,7 +380,7 @@ export function trailingFailure(messages: readonly LhMessage[]): string | null {
  *  gone (pi cannot continue from an assistant message) — else the honest
  *  400, before compaction or any turn effect (upstream PR #184). */
 export function assertRetryable(messages: readonly LhMessage[]): void {
-	const { failures, before } = failedTail(messages);
+	const { failures, before } = failedTailThroughMarkers(messages);
 	if (failures.size === 0) throw new ChatInputError("retry input: the session's last turn did not fail");
 	if (!before || (before as { role?: string }).role === "assistant") throw new ChatInputError("retry input: no input left to run the turn from");
 }
@@ -349,6 +389,6 @@ export function assertRetryable(messages: readonly LhMessage[]): void {
  *  tail dropped (the failed one carries nothing worth keeping); the
  *  markers after them stay. */
 export function withoutTrailingFailures(messages: readonly LhMessage[]): LhMessage[] {
-	const { failures } = failedTail(messages);
+	const { failures } = failedTailThroughMarkers(messages);
 	return failures.size === 0 ? [...messages] : messages.filter((m) => !failures.has(m));
 }
