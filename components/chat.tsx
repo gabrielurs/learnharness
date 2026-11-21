@@ -70,6 +70,7 @@ import {
 import { CoverageRing } from "@/components/extraction-coverage";
 import {
 	activeProblemOf,
+	pendingQuestionOf,
 	dismissedAnswer,
 	findPendingToolCall,
 	phaseAt3,
@@ -667,6 +668,7 @@ export function Chat({
 				void dismissQuestion(
 					p.toolCallId,
 					reading ? { ...answer, readingThinking: reading } : answer,
+					p.key,
 				);
 				if (busyRef.current) abortInFlightTurn();
 				return;
@@ -698,7 +700,7 @@ export function Chat({
 		// mount-only by design (turnInFlight read at initial value)
 	}, []);
 
-	const pending = findPendingToolCall(messages);
+	const pending = findPendingToolCall(messages, pendingQuestionOf(nativeMessages));
 	// The abort handler reads the pending question from a ref (the window
 	// listener is mount-scoped; the value it needs is render-scoped).
 	const pendingRef = useRef(pending);
@@ -798,7 +800,7 @@ export function Chat({
 		readingThinkingRef.current = "";
 		setReadingThinking("");
 	}, []);
-	const pendingQuestionId = pending?.toolCallId ?? null;
+	const pendingQuestionId = pending?.key ?? null;
 	useEffect(() => {
 		if (preserveReadingRef.current) return;
 		// Different calls never share a draft; a failed submission of THIS
@@ -1695,8 +1697,8 @@ export function Chat({
 				    fold) and NEVER overlaps the composer. */}
 				<DockOverlay
 					pending={pending}
-					initialQuestionDraft={pending ? questionDraft(pending.toolCallId)?.form : undefined}
-					onSaveQuestionDraft={(form) => { if (pending) saveQuestionDraft(pending.toolCallId, { form }); }}
+					initialQuestionDraft={pending ? questionDraft(pending.key)?.form : undefined}
+					onSaveQuestionDraft={(form) => { if (pending) saveQuestionDraft(pending.key, { form }); }}
 					practice={activeProblem}
 					compactionRunning={compacting}
 					onSubmitThinking={submitThinking}
@@ -1781,14 +1783,14 @@ export function Chat({
 						// ride the same callback (QuestionAnswerData.dismissed). The
 						// reading-thinking draft rides along (owner 2026-10-03) — the
 						// check answer is its only carrier.
-						saveQuestionDraft(pending.toolCallId, { readingThinking: readingThinkingRef.current });
+						saveQuestionDraft(pending.key, { readingThinking: readingThinkingRef.current });
 						// A prediction or probe answer leaves the notes for the
 						// teach check's return (upstream PR #138).
 						const reading = requiresReveal ? readingThinkingRef.current.trim() || undefined : undefined;
 						if (requiresReveal) preserveReadingRef.current = false;
 						// The pending-id effect clears this only when the question
 						// actually leaves. An offline preflight keeps the draft visible.
-						submitAnswer(pending.tool, pending.toolCallId, reading ? { ...output, readingThinking: reading } : output);
+						submitAnswer(pending.tool, pending.toolCallId, reading ? { ...output, readingThinking: reading } : output, pending.key);
 					}}
 				/>
 				</Conversation>
@@ -1970,7 +1972,7 @@ function DockOverlay({
 	setupCta,
 	queuedSteers,
 }: {
-	pending: ReturnType<typeof findPendingToolCall>;
+	pending: ReturnType<typeof pendingQuestionOf>;
 	initialQuestionDraft?: QuestionFormDraft;
 	onSaveQuestionDraft: (draft: QuestionFormDraft) => void;
 	/** Compaction running for this chat (round 14) — the docks' submit
@@ -2045,7 +2047,7 @@ function DockOverlay({
 	const predictionPending =
 		pending !== null && (!requiresReveal || pending.tool === "exercise") && questionAllowsAskBefore(pending.tool, phase);
 
-	const pendingId = pending?.toolCallId ?? null;
+	const pendingId = pending?.key ?? null;
 	const initialPendingRef = useRef(pendingId);
 
 	// Teach-question ARRIVAL state, applied during render — BEFORE the
@@ -2101,6 +2103,17 @@ function DockOverlay({
 	requiresRevealRef.current = requiresReveal;
 	const revealedRef = useRef(revealed);
 	revealedRef.current = revealed;
+
+	const blockRef = useRef<HTMLDivElement>(null);
+	const viewportRef = useRef<HTMLDivElement>(null);
+	const bodyRef = useRef<HTMLDivElement>(null);
+	const shellRef = useRef<HTMLDivElement>(null);
+	const contentRef = useRef<HTMLDivElement>(null);
+	const mode = pending
+		? `question:${pending.key}`
+		: practice
+			? `practice:${practice.toolCallId}`
+			: "chat";
 
 	// The plan marginalia's flank width (owner, plan-placement round): from
 	// the DOCK container's right edge to the block's right edge — the bare
@@ -2236,7 +2249,6 @@ function DockOverlay({
 	// In chat mode drops apply (the composer's typing shrink is today's
 	// harmless in-flow behavior; nothing auto-expands there).
 	const reserveRef = useRef(0);
-	const blockRef = useRef<HTMLDivElement>(null);
 	const offer = (blockH: number) => {
 		const next = blockH + GRADIENT_H;
 		if (next <= reserveRef.current + 0.5 && pendingRef.current) return; // fold immunity
@@ -2356,11 +2368,6 @@ function DockOverlay({
 		if (b) offer(b.getBoundingClientRect().height);
 	};
 
-	const mode = pending
-		? `question:${pending.toolCallId}`
-		: practice
-			? `practice:${practice.toolCallId}`
-			: "chat";
 	// The opening variant of a session appears instantly — the fade/rise is
 	// reserved for mid-session transitions.
 	const initialModeRef = useRef(mode);
@@ -2368,11 +2375,9 @@ function DockOverlay({
 	// Height morph: animate the shell from its previous height to its new one
 	// whenever the variant (chat ↔ question ↔ collapsed bar) changes. Typing
 	// growth keeps the same stateKey and is NOT animated.
-	const shellRef = useRef<HTMLDivElement>(null);
 	// The fold's CONTENT fade (owner round, 2026-10-05): the shell height
 	// morphs, but the bar↔form content used to hard-swap. A WAAPI fade/rise
 	// on the toggle — no remount, so the question form's state survives.
-	const contentRef = useRef<HTMLDivElement>(null);
 	const prevExpandedForFadeRef = useRef(expanded);
 	useIsoLayoutEffect(() => {
 		if (prevExpandedForFadeRef.current === expanded) return;

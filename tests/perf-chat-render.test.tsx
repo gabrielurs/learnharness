@@ -124,7 +124,7 @@ const MESSAGES = [
 		2,
 		"toolUse",
 	),
-	{ role: "toolResult", toolCallId: "t1", toolName: "render_probe", content: [{ type: "text", text: "ok" }], isError: false, timestamp: 3 },
+	{ role: "toolResult", id: "r1", toolCallId: "t1", toolName: "render_probe", content: [{ type: "text", text: "ok" }], isError: false, timestamp: 3 },
 	assistant("a2", [{ type: "text", text: "So the solid sits on top. `density` matters." }], 4),
 	{ role: "user", id: "u2", content: "And at 4 °C?", timestamp: 5 },
 	assistant("a3", [{ type: "text", text: "Water is densest near 4 °C." }], 6),

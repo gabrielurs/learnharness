@@ -18,8 +18,8 @@ import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import {
 	needsContinuation,
+	pendingQuestionOf,
 	danglingQuestionOf,
-	answeredCallIds,
 	failedResponseAtEnd,
 	measuredContextTokens,
 	newAnswerResult,
@@ -122,12 +122,13 @@ async function* sseEvents(reader: ReadableStreamDefaultReader<Uint8Array>): Asyn
 /** The dangling question call's tool name (the optimistic answer result's
  *  toolName — the server stamps the same from its own record scan). */
 export function pendingCallTool(messages: readonly LhMessage[], toolCallId: string): string | null {
-	for (const m of messages) {
-		if ((m as { role?: string }).role !== "assistant") continue;
-		const content = (m as { content?: unknown }).content;
-		if (!Array.isArray(content)) continue;
-		for (const block of content as Array<{ type?: string; id?: string; name?: string }>) {
-			if (block.type === "toolCall" && block.id === toolCallId) return block.name ?? null;
+	// Match projection's newest-occurrence pairing for pre-uniquifier records.
+	for (let mi = messages.length - 1; mi >= 0; mi--) {
+		const m = messages[mi]!;
+		if (m.role !== "assistant") continue;
+		for (let bi = m.content.length - 1; bi >= 0; bi--) {
+			const block = m.content[bi]!;
+			if (block.type === "toolCall" && block.id === toolCallId) return block.name;
 		}
 	}
 	return null;
@@ -640,12 +641,18 @@ export class SessionModel {
 	 * POST + consume. Ready-gated: one turn per client at a time (the
 	 * server's 409 + identity retry covers the wake-race window).
 	 */
-	async send(input: ChatInput): Promise<void> {
+	async send(input: ChatInput, onAccepted?: () => void, questionKey?: string): Promise<boolean> {
 		const recovering = this.statusValue === "error";
-		if (!this.readyRef && !recovering) return;
+		if (!this.readyRef && !recovering) return false;
 		// The learner acted (not the app's own continuation nudges): the
 		// study timer starts a block if it is idle (fork, 2026-10-24).
 		if (input.type !== "continue") signalStudyActivity();
+		const subject = input.type === "answer" ? pendingQuestionOf([...this.base, ...this.tail]) : null;
+		// A render-scoped answer must not move to another occurrence sharing
+		// its id. This identity is local only; the server's wire is unchanged.
+		if (input.type === "answer" && questionKey !== undefined &&
+			(subject?.key !== questionKey || subject.toolCallId !== input.toolCallId)) return false;
+		const expectedKey = questionKey ?? (input.type === "answer" && subject?.toolCallId === input.toolCallId ? subject.key : undefined);
 		this.consumeAbort?.abort();
 		const controller = new AbortController();
 		this.consumeAbort = controller;
@@ -654,29 +661,30 @@ export class SessionModel {
 		if (recovering && input.type === "answer") {
 			try {
 				const res = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}`, { signal: controller.signal });
-				if (this.consumeAbort !== controller) return;
+				if (this.consumeAbort !== controller) return false;
 				if (!res.ok) throw new Error((await res.text()) || "An error occurred.");
 				const record = await res.json() as { messages?: LhMessage[]; turnInFlight?: boolean; turnError?: string };
-				if (this.consumeAbort !== controller) return;
+				if (this.consumeAbort !== controller) return false;
 				// No verified record/liveness: retain the draft and never guess
 				// whether a lost acknowledgement meant the input was accepted.
 				if (!Array.isArray(record.messages) || typeof record.turnInFlight !== "boolean") throw new Error("An error occurred.");
 				this.setMessages(record.messages, record.turnError);
 				if (record.turnInFlight) {
 					await this.resumeStream(false);
-					return;
+					return false;
 				}
-				if (input.type === "answer" && (answeredCallIds(record.messages).has(input.toolCallId) || danglingQuestionOf(record.messages)?.toolCallId !== input.toolCallId)) {
+				const current = pendingQuestionOf(record.messages);
+				if (current?.toolCallId !== input.toolCallId || (expectedKey !== undefined && current.key !== expectedKey)) {
 					// The call already resolved, or no longer owns the dock. Adopt
 					// truth, never POST that answer a second time.
 					this.setStatus("ready");
-					return;
+					return false;
 				}
 			} catch (err) {
-				if (this.consumeAbort !== controller || controller.signal.aborted) return;
+				if (this.consumeAbort !== controller || controller.signal.aborted) return false;
 				this.setError((err as Error).message);
 				this.setStatus("error");
-				return;
+				return false;
 			}
 		}
 		if (input.type !== "continue") this.automaticContinuationBlocked = false;
@@ -698,7 +706,7 @@ export class SessionModel {
 			const tool = pendingCallTool([...this.base, ...this.tail], input.toolCallId) ?? "quiz";
 			const result = { ...newAnswerResult(input.toolCallId, tool, input.answer), id: localId() };
 			optimistic.push(result);
-			this.unconfirmedAnswers.set(result.id, input.toolCallId);
+			this.unconfirmedAnswers.set(result.id, expectedKey ?? input.toolCallId);
 		} else if (input.type === "ask-before-check") {
 			// Ask before taking the question (upstream PR #138): the call
 			// closes as notYet, then his message — the write-ahead's pair.
@@ -757,10 +765,11 @@ export class SessionModel {
 			// A stop() or a newer send/consume won while the ack was in
 			// flight: the turn is live server-side either way — do not attach
 			// a stream from a view that is gone or superseded.
-			if (this.consumeAbort !== controller) return;
+			if (this.consumeAbort !== controller) return true;
 			await this.resumeStream(true);
+			return true;
 		} catch (err) {
-			if (this.consumeAbort !== controller || controller.signal.aborted) return;
+			if (this.consumeAbort !== controller || controller.signal.aborted) return false;
 			// Restore the question when acceptance failed or is unknown. Remove
 			// only THIS optimistic answer, never saved copies/newer live content.
 			// Other input kinds retain their existing optimistic presentation.
@@ -773,6 +782,7 @@ export class SessionModel {
 			}
 			this.setError((err as Error).message);
 			this.setStatus("error");
+			return false;
 		}
 	}
 
@@ -820,9 +830,9 @@ export class SessionModel {
 
 	/** The answer path (the dock): the answer IS the question call's tool
 	 *  result (fork 1), riding as its input event. */
-	submitAnswer(tool: string, toolCallId: string, output: QuestionAnswerData): Promise<void> {
+	submitAnswer(tool: string, toolCallId: string, output: QuestionAnswerData, questionKey?: string): Promise<void> {
 		void tool;
-		return this.send({ type: "answer", toolCallId, answer: output });
+		return this.send({ type: "answer", toolCallId, answer: output }, undefined, questionKey).then(() => undefined);
 	}
 
 	/** The dismissal path (owner design 2026-10-03, "A2"): the skipped
@@ -831,8 +841,10 @@ export class SessionModel {
 	 * user's choice; the next plain send is the wake. On failure the
 	 * durable record wins: the error surfaces, the record-changed sync
 	 * (or any later refetch) replaces the optimistic append with truth. */
-	async dismissQuestion(toolCallId: string, answer: QuestionAnswerData): Promise<void> {
+	async dismissQuestion(toolCallId: string, answer: QuestionAnswerData, questionKey?: string): Promise<void> {
 		if (!this.readyRef) return;
+		const subject = pendingQuestionOf([...this.base, ...this.tail]);
+		if (questionKey !== undefined && (subject?.key !== questionKey || subject.toolCallId !== toolCallId)) return;
 		const tool = pendingCallTool([...this.base, ...this.tail], toolCallId) ?? "quiz";
 		this.mutate(() => {
 			this.tail = [...this.tail, { ...newAnswerResult(toolCallId, tool, answer), id: localId() }];
@@ -882,19 +894,21 @@ export class SessionModel {
 	}
 
 	/** Submission snapshots outlive the dock, not the session mount. */
-	questionDraft(toolCallId: string): QuestionDraft | undefined {
-		return this.questionDrafts.get(toolCallId);
+	questionDraft(questionKey: string): QuestionDraft | undefined {
+		return this.questionDrafts.get(questionKey);
 	}
 
-	saveQuestionDraft(toolCallId: string, draft: Partial<QuestionDraft>): void {
-		this.questionDrafts.set(toolCallId, { ...this.questionDrafts.get(toolCallId), ...draft });
+	saveQuestionDraft(questionKey: string, draft: Partial<QuestionDraft>): void {
+		this.questionDrafts.set(questionKey, { ...this.questionDrafts.get(questionKey), ...draft });
 	}
 
 	private forgetResolvedDrafts(record: readonly LhMessage[]): void {
-		const answered = answeredCallIds(record);
-		for (const id of answered) this.questionDrafts.delete(id);
-		for (const [id, callId] of this.unconfirmedAnswers) {
-			if (answered.has(callId)) this.unconfirmedAnswers.delete(id);
+		const pendingKey = pendingQuestionOf(record)?.key;
+		for (const key of this.questionDrafts.keys()) {
+			if (key !== pendingKey) this.questionDrafts.delete(key);
+		}
+		for (const [id, key] of this.unconfirmedAnswers) {
+			if (key !== pendingKey) this.unconfirmedAnswers.delete(id);
 		}
 	}
 
