@@ -42,7 +42,9 @@ export function splitQualified(id: string): { provider: string | null; id: strin
  * different bookkeeping. Bare catalog ids are unchanged.
  */
 export function prettyModel(id: string, qualified = false): string {
-	const { provider, id: bare } = splitQualified(id);
+	// Only a usage stamp (qualified) carries "provider:" in front; a bare id is
+	// kept whole, colons included (":free" is part of the model's name).
+	const { provider, id: bare } = qualified ? splitQualified(id) : { provider: null, id };
 	const short = bare.includes("/") ? bare.slice(bare.lastIndexOf("/") + 1) : bare;
 	const parts = short.split("-");
 	// Only DATE-like tails drop (-0902, -20251001): a short numeric tail is
