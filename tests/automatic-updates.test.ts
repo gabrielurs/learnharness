@@ -88,6 +88,9 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 	const context = createContext({
 		require: (id: string) => {
 			if (id === "electron") return electron;
+			// Dev path: main() awaits waitUntilUp(LH_DEV_URL), which polls http and retries via a
+			// setTimeout that is a no-op in this vm. Answer it here so main() settles without a dev server.
+			if (id === "node:http") return { get: (_url: string, cb: (res: { statusCode: number; resume(): void }) => void) => { cb({ statusCode: 200, resume() {} }); return { on() {} }; } };
 			if (id === "electron-updater") {
 				if (updaterMissing) throw new Error("missing updater");
 				return { autoUpdater: updater };
