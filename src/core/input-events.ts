@@ -384,11 +384,3 @@ export function assertRetryable(messages: readonly LhMessage[]): void {
 	if (failures.size === 0) throw new ChatInputError("retry input: the session's last turn did not fail");
 	if (!before || (before as { role?: string }).role === "assistant") throw new ChatInputError("retry input: no input left to run the turn from");
 }
-
-/** The record a retry runs from: the failed assistant message(s) at the
- *  tail dropped (the failed one carries nothing worth keeping); the
- *  markers after them stay. */
-export function withoutTrailingFailures(messages: readonly LhMessage[]): LhMessage[] {
-	const { failures } = failedTailThroughMarkers(messages);
-	return failures.size === 0 ? [...messages] : messages.filter((m) => !failures.has(m));
-}
