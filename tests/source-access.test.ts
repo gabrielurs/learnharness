@@ -62,9 +62,9 @@ for (const name of [".env", ".env.example", ".env.template", ".ENV.production"])
 // The app's real policy provider (server composition): AUTH_FILE, the data
 // dir, .env.local and the `*-credentials.json` / temp siblings of the key store.
 const { privatePaths } = await import("../src/server/file-access.ts");
-const { setFileAccessPolicy, isDenied, HOME_SECRETS } = await import("../src/agent/tools/file-access.ts");
-/** isDenied against a synthetic home: the home secret stores plus the env-file rule. */
-const isDeniedAt = (file: string, home: string) => isDenied(file, { folders: [], denied: HOME_SECRETS.map((s) => path.join(home, s)) });
+const { setFileAccessPolicy, HOME_SECRETS } = await import("../src/agent/tools/file-access.ts");
+// Dynamic like the modules above: the helper loads file-access, so it must come after the env setup.
+const { isDeniedAt } = await import("./helpers/file-access.ts");
 const { walkFiles } = await import("../src/agent/tools/fs-shared.ts");
 const { readTool } = await import("../src/agent/tools/read.ts");
 const { lsTool } = await import("../src/agent/tools/ls.ts");

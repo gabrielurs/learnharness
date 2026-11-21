@@ -94,7 +94,8 @@ function readTextSlice(text: string, offset: number | undefined, limit: number |
  * (2026-09-19): the description is pi-verbatim (user: copy tool usage
  * guidance exactly) — the teaching doctrine moved to the shared prompt
  * fragment (prompts/shared/). Relative paths resolve against the
- * learner's home (fs-shared.ts), the harness's anchor.
+ * anchor (sourceAnchor, file-access.ts): the learner's home, or the first
+ * allowed folder when the scope is restricted.
  */
 export const readTool: AgentTool<typeof readInput> = {
 	name: "read",

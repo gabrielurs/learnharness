@@ -6,14 +6,11 @@ import { describe, it } from "node:test";
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { expandBraces, globToRegex, matchGlob, resolveSourcePath, walkFiles } from "../src/agent/tools/fs-shared.ts";
-import { HOME_SECRETS, isDenied } from "../src/agent/tools/file-access.ts";
 import { findTool } from "../src/agent/tools/find.ts";
 import { grepTool } from "../src/agent/tools/grep.ts";
 import { lsTool } from "../src/agent/tools/ls.ts";
 import { readTool } from "../src/agent/tools/read.ts";
-
-/** isDenied against a synthetic home: the home secret stores plus the env-file rule. */
-const isDeniedAt = (file: string, home: string) => isDenied(file, { folders: [], denied: HOME_SECRETS.map((s) => path.join(home, s)) });
+import { isDeniedAt } from "./helpers/file-access.ts";
 
 /**
  * The learner-filesystem tools (sources v1, 2026-09-19): ls/find/grep as
