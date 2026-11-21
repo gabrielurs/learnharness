@@ -11,7 +11,7 @@ import { guardSourcePath } from "./file-access.ts";
  * for the learner's local files. The flow is learner-owned: he pastes file
  * paths into the chat, the agent reads on its own terms (nothing is
  * auto-injected). Broad local reads remain the scope, except the shared
- * sensitive-location/credential denials in fs-shared.ts; this is not a sandbox.
+ * sensitive-location/credential denials in file-access.ts; this is not a sandbox.
  *
  * Ported behaviors (mirroring pi's dist/core/tools/read.js):
  * - text files: utf-8, offset (1-indexed) / limit slicing, and the

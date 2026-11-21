@@ -6,11 +6,14 @@ import { describe, it } from "node:test";
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { expandBraces, globToRegex, matchGlob, resolveSourcePath, walkFiles } from "../src/agent/tools/fs-shared.ts";
-import { isSensitivePath } from "../src/agent/tools/file-access.ts";
+import { HOME_SECRETS, isDenied } from "../src/agent/tools/file-access.ts";
 import { findTool } from "../src/agent/tools/find.ts";
 import { grepTool } from "../src/agent/tools/grep.ts";
 import { lsTool } from "../src/agent/tools/ls.ts";
 import { readTool } from "../src/agent/tools/read.ts";
+
+/** isDenied against a synthetic home: the home secret stores plus the env-file rule. */
+const isDeniedAt = (file: string, home: string) => isDenied(file, { folders: [], denied: HOME_SECRETS.map((s) => path.join(home, s)) });
 
 /**
  * The learner-filesystem tools (sources v1, 2026-09-19): ls/find/grep as
@@ -176,21 +179,21 @@ describe("sensitive locations under home are off-limits", () => {
 		}
 	}
 
-	it("isSensitivePath matches listed dirs, dotenv files, and nothing that merely looks alike", () => {
+	it("isDenied matches listed dirs, dotenv files, and nothing that merely looks alike", () => {
 		const home = path.join(os.tmpdir(), "h");
-		assert.equal(isSensitivePath(path.join(home, ".claude"), home), true);
-		assert.equal(isSensitivePath(path.join(home, ".claude", "projects", "x.jsonl"), home), true);
-		assert.equal(isSensitivePath(path.join(home, ".SSH", "id_rsa"), home), true);
-		assert.equal(isSensitivePath(path.join(home, ".config", "gcloud", "credentials.db"), home), true);
-		assert.equal(isSensitivePath(path.join(home, "Library", "Keychains", "login.keychain-db"), home), true);
-		assert.equal(isSensitivePath(path.join(home, "work", ".env"), home), true);
-		assert.equal(isSensitivePath(path.join(os.tmpdir(), "elsewhere", ".env.production"), home), true);
-		assert.equal(isSensitivePath(home, home), false);
-		assert.equal(isSensitivePath(path.join(home, ".claudette", "ok.md"), home), false);
-		assert.equal(isSensitivePath(path.join(home, "notes", "claude.md"), home), false);
-		assert.equal(isSensitivePath(path.join(home, ".configs", "init.lua"), home), false);
-		assert.equal(isSensitivePath(path.join(home, "notes", "environment.md"), home), false);
-		assert.equal(isSensitivePath(path.join(os.tmpdir(), ".ssh", "id_rsa"), home), false);
+		assert.equal(isDeniedAt(path.join(home, ".claude"), home), true);
+		assert.equal(isDeniedAt(path.join(home, ".claude", "projects", "x.jsonl"), home), true);
+		assert.equal(isDeniedAt(path.join(home, ".SSH", "id_rsa"), home), true);
+		assert.equal(isDeniedAt(path.join(home, ".config", "gcloud", "credentials.db"), home), true);
+		assert.equal(isDeniedAt(path.join(home, "Library", "Keychains", "login.keychain-db"), home), true);
+		assert.equal(isDeniedAt(path.join(home, "work", ".env"), home), true);
+		assert.equal(isDeniedAt(path.join(os.tmpdir(), "elsewhere", ".env.production"), home), true);
+		assert.equal(isDeniedAt(home, home), false);
+		assert.equal(isDeniedAt(path.join(home, ".claudette", "ok.md"), home), false);
+		assert.equal(isDeniedAt(path.join(home, "notes", "claude.md"), home), false);
+		assert.equal(isDeniedAt(path.join(home, ".configs", "init.lua"), home), false);
+		assert.equal(isDeniedAt(path.join(home, "notes", "environment.md"), home), false);
+		assert.equal(isDeniedAt(path.join(os.tmpdir(), ".ssh", "id_rsa"), home), false);
 	});
 
 	it("walkFiles never enters them", async () => {

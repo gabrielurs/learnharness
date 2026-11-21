@@ -62,7 +62,9 @@ for (const name of [".env", ".env.example", ".env.template", ".ENV.production"])
 // The app's real policy provider (server composition): AUTH_FILE, the data
 // dir, .env.local and the `*-credentials.json` / temp siblings of the key store.
 const { privatePaths } = await import("../src/server/file-access.ts");
-const { setFileAccessPolicy, isSensitivePath, HOME_SECRETS } = await import("../src/agent/tools/file-access.ts");
+const { setFileAccessPolicy, isDenied, HOME_SECRETS } = await import("../src/agent/tools/file-access.ts");
+/** isDenied against a synthetic home: the home secret stores plus the env-file rule. */
+const isDeniedAt = (file: string, home: string) => isDenied(file, { folders: [], denied: HOME_SECRETS.map((s) => path.join(home, s)) });
 const { walkFiles } = await import("../src/agent/tools/fs-shared.ts");
 const { readTool } = await import("../src/agent/tools/read.ts");
 const { lsTool } = await import("../src/agent/tools/ls.ts");
@@ -119,8 +121,8 @@ describe("source access: configured credentials only", () => {
 	});
 
 	it("does not confuse an allowed credential-directory sibling with the credential directory", () => {
-		assert.equal(isSensitivePath(path.join(root, "private-sibling", "chatgpt-credentials.json"), home), false);
-		assert.equal(isSensitivePath(path.join(root, "..ordinary", "notes.md"), home), false);
+		assert.equal(isDeniedAt(path.join(root, "private-sibling", "chatgpt-credentials.json"), home), false);
+		assert.equal(isDeniedAt(path.join(root, "..ordinary", "notes.md"), home), false);
 	});
 });
 
@@ -284,21 +286,21 @@ describe("source access: credential case aliases on the fixture filesystem", () 
 describe("source access: path spelling", () => {
 	it("covers every home secret store, case-insensitively and with segment boundaries", () => {
 		for (const location of HOME_SECRETS) {
-			assert.equal(isSensitivePath(path.join(home, location), home), true, location);
-			assert.equal(isSensitivePath(path.join(home, location.toUpperCase(), "child"), home), true, location);
-			assert.equal(isSensitivePath(path.join(home, `${location}-lookalike`, "child"), home), false, location);
+			assert.equal(isDeniedAt(path.join(home, location), home), true, location);
+			assert.equal(isDeniedAt(path.join(home, location.toUpperCase(), "child"), home), true, location);
+			assert.equal(isDeniedAt(path.join(home, `${location}-lookalike`, "child"), home), false, location);
 		}
 		for (const inside of [".config/gcloud", "Library/Keychains"]) {
-			assert.equal(isSensitivePath(path.join(home, inside, "child"), home), true, inside);
+			assert.equal(isDeniedAt(path.join(home, inside, "child"), home), true, inside);
 		}
 	});
 
 	it("Windows drive/UNC namespaces and dotenv streams cannot bypass matching", { skip: process.platform !== "win32" }, () => {
 		for (const winHome of ["C:\\Users\\Learner", "\\\\server\\share\\Learner"]) {
 			const prefix = winHome.startsWith("\\\\") ? `\\\\?\\UNC\\${winHome.slice(2)}` : `\\\\?\\${winHome}`;
-			assert.equal(isSensitivePath(path.join(prefix, ".ssh", "key"), winHome), true);
-			assert.equal(isSensitivePath(path.join(winHome, "notes", ".env:stream"), winHome), true);
-			assert.equal(isSensitivePath(path.join(winHome, ".sship", "key"), winHome), false);
+			assert.equal(isDeniedAt(path.join(prefix, ".ssh", "key"), winHome), true);
+			assert.equal(isDeniedAt(path.join(winHome, "notes", ".env:stream"), winHome), true);
+			assert.equal(isDeniedAt(path.join(winHome, ".sship", "key"), winHome), false);
 		}
 	});
 });

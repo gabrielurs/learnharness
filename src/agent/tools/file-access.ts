@@ -96,7 +96,7 @@ export function isRefused(realPath: string, resolved: FileAccessPolicy): boolean
 
 /** A path the tutor may never read, whatever the folders: the app's
  *  private data, the home secret stores, an env file. */
-function isDenied(realPath: string, resolved: FileAccessPolicy): boolean {
+export function isDenied(realPath: string, resolved: FileAccessPolicy): boolean {
 	const file = comparisonPath(realPath);
 	return ENV_FILE.test(path.basename(file)) || resolved.denied.some((d) => isWithin(file, comparisonPath(d)));
 }
@@ -114,13 +114,6 @@ function comparisonPath(absolute: string): string {
 		if (stream !== -1) normalized = path.join(path.dirname(normalized), base.slice(0, stream));
 	}
 	return normalized.toLowerCase();
-}
-
-/** String-only check against a synthetic home (tests, no filesystem access):
- *  a home secret store or an env file. The runtime guard also resolves symlinks. */
-export function isSensitivePath(absolute: string, home: string = os.homedir()): boolean {
-	const file = comparisonPath(absolute);
-	return ENV_FILE.test(path.basename(file)) || HOME_SECRETS.some((s) => isWithin(file, comparisonPath(path.join(home, s))));
 }
 
 /**
