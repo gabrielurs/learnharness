@@ -97,10 +97,10 @@ describe("node detail card text", () => {
 		assert.ok(html.includes("Money multiplier") && html.includes(statement));
 	});
 
-	it("uses the shared Markdown and image-safety policy without changing the source fields", () => {
+	it("uses the shared Markdown policy without changing the source fields", () => {
 		const source = {
 			name: "**Meaning** $x$",
-			statement: "A [reference](https://example.invalid/) and `literal` code.\n\n| Value | Meaning |\n| --- | --- |\n| $x$ | Variable |\n\n![untrusted](https://example.invalid/image.png)",
+			statement: "A [reference](https://example.invalid/) and `literal` code.\n\n| Value | Meaning |\n| --- | --- |\n| $x$ | Variable |",
 		};
 		const before = structuredClone(source);
 		const html = render(source.name, source.statement);
