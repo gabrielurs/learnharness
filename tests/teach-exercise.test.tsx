@@ -132,7 +132,7 @@ describe("the exercise rides the question pipeline like its siblings", () => {
 	it("moves the plan position and opens the teach phase, like quiz/explain", () => {
 		const tree = { nodes: [{ id: "arith", title: "A" }, { id: "other", title: "B" }], edges: [], version: 1 };
 		assert.equal(derivePlanStatusesLh(tree as never, messages).current, "arith");
-		const planned = [{ id: "r0", role: "toolResult", toolCallId: "p0", toolName: "probe_done", content: [], isError: false, timestamp: 0 }, ...messages] as never[];
+		const planned = [{ id: "pc", role: "assistant", content: [{ type: "toolCall", id: "p0", name: "probe_done", arguments: {} }], timestamp: 0 }, { id: "r0", role: "toolResult", toolCallId: "p0", toolName: "probe_done", content: [], isError: false, timestamp: 0 }, ...messages] as never[];
 		assert.equal(phaseAt3Lh(planned), "teach");
 	});
 

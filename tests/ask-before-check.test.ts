@@ -35,11 +35,17 @@ function probeDone(): LhMessage {
 	} as LhMessage;
 }
 
+/** probe_done's call and its result: the call grants completion authority
+ *  (upstream 2b1343ab), so a bare result no longer concludes the probe. */
+function probeConcluded(): LhMessage[] {
+	return [assistant("pd-call", [{ id: "probe-done", name: "probe_done", arguments: {} }]), probeDone()];
+}
+
 const CHECK = { question: "What carries the tense?", type: "check", nodeId: "n1" };
 
 function teachCheck(calls: { id: string; name?: string; arguments?: unknown }[] = [{ id: "c1" }]): LhMessage[] {
 	return [
-		probeDone(),
+		...probeConcluded(),
 		assistant(
 			"a1",
 			calls.map((c) => ({
@@ -178,11 +184,11 @@ describe("ask-before-check on a coding exercise (owner, 2026-10-26)", () => {
 		const call = (id: string, callId: string) => assistant(id, [{ id: callId, name: "exercise", arguments: EXERCISE }]);
 		const notYet = (callId: string) => newAnswerResult(callId, "exercise", notYetAnswer("exercise", EXERCISE.question, "int a;"));
 		const done = (callId: string) => newAnswerResult(callId, "exercise", { kind: "exercise", questionText: "", dontKnow: false, answers: [], text: "submitted", answeredAt: "t" });
-		const record = [probeDone(), call("a1", "x1"), notYet("x1"), call("a2", "x2"), notYet("x2"), call("a3", "x3")];
+		const record = [...probeConcluded(), call("a1", "x1"), notYet("x1"), call("a2", "x2"), notYet("x2"), call("a3", "x3")];
 		assert.equal(exerciseDraftKey(record, "x3"), "x1", "x3 re-poses x2, which re-posed x1");
 		assert.equal(exerciseDraftKey(record, "x2"), "x1");
 		assert.equal(exerciseDraftKey(record, "x1"), "x1");
-		const fresh = [probeDone(), call("a1", "x1"), done("x1"), call("a2", "x2")];
+		const fresh = [...probeConcluded(), call("a1", "x1"), done("x1"), call("a2", "x2")];
 		assert.equal(exerciseDraftKey(fresh, "x2"), "x2", "an answered exercise hands nothing on");
 		assert.equal(exerciseDraftKey(record, "unknown"), "unknown");
 	});

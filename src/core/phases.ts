@@ -33,7 +33,7 @@
  * Both are strictly sequential; the two derivations agree on every settled
  * record (a call's part projects into the same view boundary).
  *
- * Pure: no imports, no runtime deps — safe on server, client, and tests.
+ * Pure: only browser-safe core helpers — safe on server, client, and tests.
  */
 
 /** The three phases of a session, as the picker / header / dividers see them. */
@@ -81,9 +81,7 @@ function advance(
 		// not its answer — an errored-and-retried call still proves teaching
 		// began, and the retry lands in the same group anyway).
 		if (
-			phase === "probe" &&
-			part.type === "tool-probe_done" &&
-			part.state === "output-available" &&
+			phase === "probe" && part.type === "tool-probe_done" && part.state === "output-available" &&
 			(part.output as { ok?: unknown } | null | undefined)?.ok !== false
 		) {
 			phase = "plan";
@@ -158,7 +156,7 @@ export function phaseTimeline(messages: readonly PhaseMessage[]): Phase3[] {
 
 // ─── the native fold (Wave D: record-side phase over LhMessage[]) ───────────
 
-import { probeDoneConcluded, type LhMessage } from "./native-messages.ts";
+import { probeDoneResultIds, type LhMessage } from "./native-messages.ts";
 
 /** The phase at `upToIndex` (inclusive; default: the last message) of a
  *  NATIVE record. probe→plan advances at the probe_done call's clean
@@ -168,18 +166,12 @@ import { probeDoneConcluded, type LhMessage } from "./native-messages.ts";
 export function phaseAt3Lh(messages: readonly LhMessage[], upToIndex?: number): Phase3 {
 	let phase: Phase3 = "probe";
 	const last = Math.min(upToIndex ?? messages.length - 1, messages.length - 1);
+	const concluded = probeDoneResultIds(messages.slice(0, last + 1));
 	for (let i = 0; i <= last; i++) {
 		const m = messages[i]!;
 		const role = (m as { role?: string }).role;
 		if (role === "toolResult") {
-			const result = m as { toolName?: string; isError?: boolean; details?: unknown };
-			if (
-				phase === "probe" &&
-				result.toolName === "probe_done" &&
-				probeDoneConcluded(result)
-			) {
-				phase = "plan";
-			}
+			if (phase === "probe" && concluded.has(m.id)) phase = "plan";
 		} else if (role === "assistant") {
 			const content = (m as { content?: ReadonlyArray<{ type?: string; name?: string; arguments?: unknown }> }).content ?? [];
 			if (phase === "plan") {

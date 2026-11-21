@@ -796,28 +796,35 @@ export function exerciseDraftKey(messages: readonly LhMessage[], toolCallId: str
 	return calls[i]!;
 }
 
-/** Did this probe_done result CONCLUDE the probe? Not an error, and not
- *  the tool's own refusal ({ok:false} — "a question is still open",
- *  "already concluded"), which reaches the record as a plain result. */
-export function probeDoneConcluded(result: { isError?: boolean; details?: unknown }): boolean {
-	if (result.isError) return false;
-	const details = result.details as { ok?: unknown } | null | undefined;
-	return !(details && typeof details === "object" && details.ok === false);
+/** Successful probe_done result MESSAGE ids, in transcript order. A call
+ *  from a failed/aborted generation grants no completion authority. Its
+ *  later result must match both call id and tool name, must not be an
+ *  error, and must not explicitly refuse with details.ok:false. Older
+ *  clean acknowledgments without ok:true still count. No history changes. */
+export function probeDoneResultIds(messages: readonly LhMessage[]): Set<string> {
+	const calls = new Set<string>();
+	const results = new Set<string>();
+	for (const m of messages) {
+		if (m.role === "assistant") {
+			if (m.stopReason === "error" || m.stopReason === "aborted") continue;
+			for (const block of m.content) {
+				if (block.type === "toolCall" && block.name === "probe_done") calls.add(block.id);
+			}
+		} else if (
+			m.role === "toolResult" && m.toolName === "probe_done" &&
+			calls.has(m.toolCallId) && !m.isError &&
+			(m.details as { ok?: unknown } | null | undefined)?.ok !== false
+		) {
+			results.add(m.id);
+		}
+	}
+	return results;
 }
 
-/** The probe→teach construction seam (chat-handler): a probe_done call
- *  whose result CONCLUDED it means teach (upstream PR #130, extended to
- *  the fork's refusal shape). A call alone — refused, or a turn that died
- *  before its result — concludes nothing: before this rule it flipped the
- *  chat to the teacher with the assessment never recorded, for good. The
- *  prober simply calls probe_done again. */
+/** The probe→teach construction seam (chat-handler and the tool guard):
+ *  only a concluded call plus a matching successful result means teach. */
 export function hasProbeDone(messages: readonly LhMessage[]): boolean {
-	for (const m of messages) {
-		if ((m as { role?: string }).role !== "toolResult") continue;
-		const result = m as ToolResultMessage;
-		if (result.toolName === "probe_done" && probeDoneConcluded(result)) return true;
-	}
-	return false;
+	return probeDoneResultIds(messages).size > 0;
 }
 
 /** Every toolResult id in the record — answer-event validation (the call
