@@ -38,6 +38,20 @@ second pillar of input).
   unstyled (an earlier experimental outline was live-rejected — inputs
   showed a red ring on plain click-focus).
 
+## Keyboard layouts
+
+Shortcut matching and Settings rebinding use the same normalization. With
+**Ctrl, ⌘, or Alt/Option** held, a single non-ASCII character falls back to its
+physical **A–Z or comma** key position when the event supplies that code. For
+example, Russian Ctrl+`л` at `KeyK` matches **Mod+K**, and ⌘+`б` at `Comma`
+matches **Mod+,**. This also covers non-ASCII characters produced by Alt/Option,
+such as Option+K reporting `˚` at `KeyK` and normalizing to `alt+k`.
+
+ASCII characters still follow the reported character, not the physical position:
+an AZERTY event reporting `q` at `KeyA` stays `mod+q`. Bare typing is unchanged.
+Other physical codes and named keys (including dead keys) keep their existing
+handling; this is not a guarantee for every OS/IME or layout-specific key.
+
 ## Key map (Wave A — global)
 
 | Action | Binding | Seam |
