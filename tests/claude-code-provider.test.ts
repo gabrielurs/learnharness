@@ -7,7 +7,7 @@ import { after, before, describe, it } from "node:test";
 import { Type } from "typebox";
 import { normalizeContext, type AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { renderBridgePrompt } from "../src/agent/claude-code/transcript.ts";
-import { BridgeAssembler, bridgeArgs, deliveredSinceLearner, findClaudeBinary, mcpToolList, CLAUDE_BIN_ENV } from "../src/agent/claude-code/cli.ts";
+import { BridgeAssembler, bridgeArgs, childEnv, deliveredSinceLearner, findClaudeBinary, mcpToolList, CLAUDE_BIN_ENV } from "../src/agent/claude-code/cli.ts";
 import { MCP_SERVER_SOURCE } from "../src/agent/claude-code/mcp-server.ts";
 import { CLAUDE_CODE_PROVIDER } from "../src/agent/claude-code/provider.ts";
 import { piEngineForSpec, piModels } from "../src/agent/models.ts";
@@ -141,6 +141,15 @@ describe("claude-code CLI seam", () => {
 			assert.ok(args.includes(flag), flag);
 		}
 		assert.ok(!bridgeArgs("claude-sonnet-5-5", files, undefined).includes("--effort"));
+	});
+
+	it("pins CLAUDE.md and memory off in the CLI env, over any inherited value, and strips API-key billing", () => {
+		assert.equal(childEnv({ NODE_ENV: "test" }).CLAUDE_CODE_DISABLE_CLAUDE_MDS, "1");
+		assert.equal(childEnv({ NODE_ENV: "test", CLAUDE_CODE_DISABLE_CLAUDE_MDS: "0" }).CLAUDE_CODE_DISABLE_CLAUDE_MDS, "1");
+		const out = childEnv({ NODE_ENV: "test", ANTHROPIC_API_KEY: "sk-ant-x", ANTHROPIC_BASE_URL: "http://x", HOME: "/h" });
+		assert.equal(out.ANTHROPIC_API_KEY, undefined);
+		assert.equal(out.ANTHROPIC_BASE_URL, undefined);
+		assert.equal(out.HOME, "/h");
 	});
 
 	it("assembles the first assistant message from the raw API stream — text, native tool calls, usage", () => {
@@ -448,7 +457,7 @@ process.stdin.on("end", () => {
 	const mcp = JSON.parse(fs.readFileSync(args[args.indexOf("--mcp-config") + 1], "utf8"));
 	const server = mcp.mcpServers.lh;
 	const tools = JSON.parse(fs.readFileSync(server.args[1], "utf8")).map((t) => t.name);
-	fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify({ args, input, tools, apiKey: process.env.ANTHROPIC_API_KEY ?? null }) + "\\n");
+	fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify({ args, input, tools, apiKey: process.env.ANTHROPIC_API_KEY ?? null, claudeMdsOff: process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS ?? null }) + "\\n");
 	const se = (event) => process.stdout.write(JSON.stringify({ type: "stream_event", event, parent_tool_use_id: null }) + "\\n");
 	se({ type: "message_start", message: { id: "m", usage: { input_tokens: 3, output_tokens: 1 } } });
 	if (input.includes("<tool_result")) {
@@ -517,5 +526,6 @@ process.stdin.on("end", () => {
 		assert.deepEqual(calls[0].tools, ["echo"], "the agent's tools reach the MCP server");
 		assert.match(calls[1].input, /<tool_result id="toolu_echo" name="echo" is_error="false">\necho:eco/);
 		for (const call of calls) assert.equal(call.apiKey, null, "API-key billing vars are stripped from the CLI env");
+		for (const call of calls) assert.equal(call.claudeMdsOff, "1", "the CLI spawn env turns CLAUDE.md and memory off");
 	});
 });

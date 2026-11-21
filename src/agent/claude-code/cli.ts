@@ -41,8 +41,9 @@ import { BRIDGE_MCP_SERVER, BRIDGE_TOOL_PREFIX, renderBridgePrompt } from "./tra
  *
  * The call is sealed off from the user's Claude Code setup: no built-in
  * tools, no settings/hooks/plugins (`--setting-sources ""`), only the
- * bridge's MCP server, no skills, no saved session, and an empty scratch
- * cwd so no CLAUDE.md is discovered.
+ * bridge's MCP server, no skills, no saved session, an empty scratch cwd,
+ * and CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 in its env so no CLAUDE.md or memory
+ * file from ~/.claude is loaded.
  */
 
 /** Override for the binary location (packaged apps may lack the shell PATH). */
@@ -84,9 +85,13 @@ export function findClaudeBinary(env: Record<string, string | undefined> = proce
 /** Vars that would switch the CLI from the subscription login to API billing. */
 const API_AUTH_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"];
 
-function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+/** The CLI's env: API-key billing vars dropped, and CLAUDE.md / memory files
+ *  switched off whatever the parent env says — they would reach the tutor's
+ *  system prompt through the user's ~/.claude. */
+export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const out = { ...env };
 	for (const name of API_AUTH_VARS) delete out[name];
+	out.CLAUDE_CODE_DISABLE_CLAUDE_MDS = "1";
 	return out;
 }
 
