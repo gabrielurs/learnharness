@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { isRefused, resolvePolicy, sourceAnchor } from "./file-access.ts";
 
@@ -39,10 +40,13 @@ const EXCLUDED_DIR_NAMES = new Set(["node_modules", ".git", "Library", ".Trash"]
  *  (pi resolves against the project cwd; the harness's "project" is the
  *  learner's life, so the home directory is the anchor.) With allowed
  *  folders set (file-access.ts), the first allowed folder is the anchor.
+ *  A leading `~` or `~/` is the home directory, as a shell would expand it —
+ *  learners and models write paths that way. `~user` is not expanded.
  *  Resolution only — every tool still gates the result (guardSourcePath). */
 export function resolveSourcePath(p?: string): string {
 	const anchor = sourceAnchor();
 	if (!p) return anchor;
+	if (p === "~" || p.startsWith("~/") || p.startsWith(`~${path.sep}`)) return path.join(os.homedir(), p.slice(1));
 	return path.isAbsolute(p) ? p : path.join(anchor, p);
 }
 
