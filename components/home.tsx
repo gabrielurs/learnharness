@@ -7,7 +7,7 @@ import { GraphView } from "@/components/graph-view";
 import { MinimalHome } from "@/components/minimal-home";
 import { SetupDialog } from "@/components/setup-dialog";
 import { ComposerActions, NodePickerControl } from "@/components/composer-actions";
-import { useStrongKeyless, useZeroKeys, ZeroKeysPill } from "@/components/setup-cta";
+import { useModelSetup, selectedModelUnavailable, openModelPicker, ZeroKeysPill } from "@/components/setup-cta";
 import { DictationBar, joinDictation, useDictation } from "@/components/dictation";
 import { useFieldCycle } from "@/components/field-cycle";
 import { SidebarToggle } from "@/components/sidebar";
@@ -41,15 +41,8 @@ export function Home({
 	// start until the user has picked all three slots — no defaults for
 	// 33 providers. The dock shows the CTA while unconfigured; submitting
 	// a topic opens the setup dialog WITH THE DRAFT PRESERVED (Save
-	// stores the slots and the queued message sends).
-	const [configured, setConfigured] = useState(initialConfigured);
-	// The zero-keys truth (zero-keys wave): no provider key = the pill
-	// takes precedence over the models CTA (keys come first in the chain).
-	const zeroKeys = useZeroKeys();
-	// The strong slot's keyless truth (pre-send key guards, owner interlude
-	// 2026-09-25): keys may exist generally while the STRONG slot's pinned
-	// provider has none — the same skip-everything treatment on send.
-	const strongKeyless = useStrongKeyless();
+	// stores slots only; the learner sends the message themselves).
+	const { catalog, configured, zeroKeys } = useModelSetup(initialConfigured);
 	const [setupOpen, setSetupOpen] = useState(false);
 	// Voice dictation (STT wave, 2026-09-17): finals append at the end of the
 	// topic draft; the strip lives in the stats bar's middle slot.
@@ -123,12 +116,17 @@ export function Home({
 		// models case guards BEFORE creation; the key cases must too — a
 		// refused first send would otherwise leave an orphan error-shell
 		// chat in the sidebar (the 503 lands only after POST /api/chats
-		// already created the record). Same skip-everything-and-open-setup
-		// treatment; the server's 503 gate remains the belt for /chat/[id]
-		// sessions.
-		if (zeroKeys || strongKeyless) {
+		// already created the record). Zero providers opens connection setup;
+		// an unavailable selection with another provider opens its ordinary
+		// picker. The server's admission gate remains the belt.
+		if (zeroKeys) {
 			setSetupOpen(true);
 			return;
+		}
+		const strong = catalog?.slots.strong?.model;
+		if (selectedModelUnavailable(catalog, strong ? `${strong.provider}:${strong.id}` : undefined)) {
+			openModelPicker();
+			return; // Preserve the draft and never create an orphan session.
 		}
 		setBusy(true);
 		try {
@@ -326,7 +324,6 @@ export function Home({
 				open={setupOpen}
 				onClose={() => setSetupOpen(false)}
 				onDone={() => {
-					setConfigured(true);
 					setSetupOpen(false);
 					// Save only saves: the draft waits in the composer.
 				}}

@@ -1,7 +1,7 @@
 "use client";
 
 import { StudyTimer } from "@/components/study-timer";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { subscriptionLabels, subscriptionLabel, type SessionPricing, type TurnUsage } from "@/src/core";
 import { formatTokens, formatUsd, planCostLabel, prettyModel } from "@/components/usage-format";
 import { ModelControl, catalogLimits, useModelCatalog } from "@/components/model-picker";
@@ -35,6 +35,7 @@ export function StatsBar({
 	dictationSlot,
 	chatId,
 	leadingSlot,
+	onModelChange,
 }: {
 	turns: TurnUsage[];
 	contextTokens?: number | null;
@@ -44,6 +45,8 @@ export function StatsBar({
 	 *  record; absent on the draft surfaces, where it binds the strong
 	 *  slot (the new-session default). */
 	chatId?: string;
+	/** The same effective identity the visible model control owns. */
+	onModelChange?: (model: string | undefined) => void;
 	/** The dictation strip (STT wave, 2026-09-17): the row's middle is dead
 	 *  space between the session data and the model control — the mic
 	 *  button lives there, and while recording the meter unfurls to fill
@@ -56,6 +59,10 @@ export function StatsBar({
 }) {
 	const [open, setOpen] = useState(false);
 	const [selectedModel, setSelectedModel] = useState<string | undefined>();
+	const modelChanged = useCallback((model: string | undefined) => {
+		setSelectedModel(model);
+		onModelChange?.(model);
+	}, [onModelChange]);
 	// Same dropdown discipline as the model control (owner, df4433f treatment,
 	// stats round 1): close on any pointerdown outside the bar or on Escape.
 	const barRef = useRef<HTMLDivElement>(null);
@@ -197,7 +204,7 @@ export function StatsBar({
 			    model control on every composer surface. */}
 			<div className="flex shrink-0 items-center gap-1.5">
 				<StudyTimer />
-				<ModelControl chatId={chatId} onModelChange={setSelectedModel} />
+				<ModelControl chatId={chatId} onModelChange={modelChanged} />
 			</div>
 		</div>
 	);

@@ -8,7 +8,7 @@ import { DictationBar, joinDictation, useDictation } from "@/components/dictatio
 import { useFieldCycle } from "@/components/field-cycle";
 import { SidebarToggle } from "@/components/sidebar";
 import { SetupDialog } from "@/components/setup-dialog";
-import { useStrongKeyless, useZeroKeys, ZeroKeysPill } from "@/components/setup-cta";
+import { useModelSetup, selectedModelUnavailable, openModelPicker, ZeroKeysPill } from "@/components/setup-cta";
 import { StatsBar } from "@/components/stats-bar";
 import { ChainTableOverlay } from "@/components/chain-table.tsx";
 import { ComposerActions, NodePickerControl } from "@/components/composer-actions";
@@ -275,14 +275,7 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 	// 33 providers, chats cannot start. The draft stays in the textarea;
 	// Save stores the slots and never sends (owner ruling 2026-10-09) —
 	// the learner sends the draft themselves.
-	const [configured, setConfigured] = useState(initialConfigured);
-	// The zero-keys truth (zero-keys wave): no provider key = the pill
-	// takes precedence over the models CTA (keys come first in the chain).
-	const zeroKeys = useZeroKeys();
-	// The strong slot's keyless truth (pre-send key guards, owner interlude
-	// 2026-09-25): keys may exist generally while the STRONG slot's pinned
-	// provider has none — the same skip-everything treatment on send.
-	const strongKeyless = useStrongKeyless();
+	const { catalog, configured, zeroKeys } = useModelSetup(initialConfigured);
 	const [setupOpen, setSetupOpen] = useState(false);
 
 	const send = useCallback(() => {
@@ -295,11 +288,17 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 		// The pre-send KEY guards (owner interlude, no-orphan-chats): guard
 		// BEFORE startDraftSession creates the record — a refused first
 		// send would otherwise leave an orphan error-shell chat in the
-		// sidebar. Same skip-everything-and-open-setup treatment; the
-		// server's 503 gate remains the belt for /chat/[id] sessions.
-		if (zeroKeys || strongKeyless) {
+		// sidebar. Zero providers opens connection setup; an unavailable
+		// selection with another provider opens the ordinary Strong picker.
+		// The server's admission gate remains the belt.
+		if (zeroKeys) {
 			setSetupOpen(true);
 			return;
+		}
+		const strong = catalog?.slots.strong?.model;
+		if (selectedModelUnavailable(catalog, strong ? `${strong.provider}:${strong.id}` : undefined)) {
+			openModelPicker();
+			return; // The learner replaces it explicitly, then sends again.
 		}
 		setBusy(true);
 		void startDraftSession(draft, fetch, mode === "practice" ? "practice" : undefined, mode === "practice" ? picksRef.current : undefined)
@@ -308,7 +307,7 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 				else setBusy(false);
 			})
 			.catch(() => setBusy(false));
-	}, [busy, router, configured, zeroKeys, strongKeyless]);
+	}, [busy, router, configured, zeroKeys, catalog]);
 
 	return (
 		<>
@@ -369,7 +368,6 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 				open={setupOpen}
 				onClose={() => setSetupOpen(false)}
 				onDone={() => {
-					setConfigured(true);
 					setSetupOpen(false);
 					// Save only saves (owner ruling 2026-10-09): the draft
 					// waits in the composer; the learner sends it.
