@@ -166,7 +166,6 @@ export async function runPdfReaderAgent(
 	input: PdfReaderInput,
 	opts: PdfReaderOptions = {},
 ): Promise<PdfResult> {
-	const headless = opts.headless ?? getHeadless();
 	const maxIterations = opts.maxIterations ?? MAX_ITERATIONS;
 	// The learner-filesystem gate (upstream PR #157): the same policy and
 	// home anchor as read/ls/find/grep — a refused or missing path fails
@@ -187,6 +186,7 @@ export async function runPdfReaderAgent(
 	if (openError) {
 		return { path: pdfPath, question: input.question, brief: `PDF failed: ${openError}`, pagesRead: [], pagesConsulted: [] };
 	}
+	const headless = opts.headless ?? getHeadless();
 	// No Chrome gate (Wave E, 2026-10-10): pdf_render is native now
 	// (pdfjs paints into @napi-rs/canvas in-process) — the whole pdf-reader
 	// runs browser-free; text tools always worked without one.

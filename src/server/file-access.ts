@@ -38,10 +38,15 @@ export function privatePaths(env: Record<string, string | undefined> = process.e
 	return denied;
 }
 
-/** `<provider>-credentials.json` files in `dir` (chatgpt, copilot, …). */
+/** Temp copies the key writers create beside the stores (store/auth.ts and the
+ *  electron subscription store): a half-written key is still a key. */
+const CREDENTIAL_TEMP = /^(?:\.auth\.json\.tmp-\d+|(?:chatgpt|github-copilot|xai)-credentials\.json\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)$/i;
+
+/** `<provider>-credentials.json` files in `dir` (chatgpt, copilot, …), and the
+ *  writers' temp files there (upstream #414: they hold the same secret). */
 function credentialStores(dir: string): string[] {
 	try {
-		return fs.readdirSync(dir).filter((f) => f.endsWith("-credentials.json")).map((f) => path.join(dir, f));
+		return fs.readdirSync(dir).filter((f) => f.endsWith("-credentials.json") || CREDENTIAL_TEMP.test(f)).map((f) => path.join(dir, f));
 	} catch {
 		return [];
 	}

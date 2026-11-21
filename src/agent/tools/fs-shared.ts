@@ -151,6 +151,11 @@ export async function walkFiles(
 	let aborted = false;
 	if (signal?.aborted) return { timedOut: false, aborted: true };
 	const policy = await resolvePolicy();
+	// Denials are checked on REAL paths, so a root that is an alias of a protected
+	// folder cannot hide it; visit() still gets the caller's spelling of each path.
+	const lexicalRoot = path.resolve(root);
+	const realRoot = await fs.realpath(lexicalRoot).catch(() => lexicalRoot);
+	if (isRefused(realRoot, policy)) return { timedOut, aborted };
 
 	const walkDir = async (dir: string): Promise<boolean> => {
 		if (Date.now() > deadline) {
@@ -182,14 +187,14 @@ export async function walkFiles(
 				if (EXCLUDED_DIR_NAMES.has(entry.name)) continue;
 				if (await walkDir(full)) return true;
 			} else if (entry.isFile()) {
-				if (await visit(full)) return true;
+				if (await visit(path.join(lexicalRoot, path.relative(realRoot, full)))) return true;
 			}
 			// symlinks/other: not followed (pi's fd doesn't follow either)
 		}
 		return false;
 	};
 
-	await walkDir(root);
+	await walkDir(realRoot);
 	return { timedOut, aborted };
 }
 

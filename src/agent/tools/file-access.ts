@@ -29,9 +29,12 @@ export const HOME_SECRETS: readonly string[] = [
 	".ssh", ".aws", ".gnupg", ".config", "Library",
 	".netrc", ".git-credentials", ".npmrc", ".docker", ".kube", ".claude",
 	".zsh_history", ".bash_history",
+	".codex", ".cursor", ".gemini", ".azure", ".pypirc", ".mozilla",
+	"AppData/Local/Google/Chrome", "AppData/Local/BraveSoftware", "AppData/Local/Microsoft/Edge",
+	"AppData/Roaming/Mozilla",
 ];
 /** Env files — keys and tokens by convention — anywhere. */
-const ENV_FILE = /^\.env(\..+)?$/;
+const ENV_FILE = /^\.env(\..*)?$/i;
 
 export interface FileAccessPolicy {
 	/** Absolute folders the tools may read inside; empty = unrestricted. */
@@ -61,7 +64,7 @@ export function sourceAnchor(policy: FileAccessPolicy = fileAccessPolicy()): str
 /** `child` is `parent` or lies beneath it (both absolute, normalized). */
 export function isWithin(child: string, parent: string): boolean {
 	const rel = path.relative(parent, child);
-	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+	return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
 /** realpath when the path exists; otherwise the resolved path (a denied
@@ -94,7 +97,30 @@ export function isRefused(realPath: string, resolved: FileAccessPolicy): boolean
 /** A path the tutor may never read, whatever the folders: the app's
  *  private data, the home secret stores, an env file. */
 function isDenied(realPath: string, resolved: FileAccessPolicy): boolean {
-	return ENV_FILE.test(path.basename(realPath)) || resolved.denied.some((d) => isWithin(realPath, d));
+	const file = comparisonPath(realPath);
+	return ENV_FILE.test(path.basename(file)) || resolved.denied.some((d) => isWithin(file, comparisonPath(d)));
+}
+
+/** Comparison key only, never for opening a file: case-folded (`.SSH` and
+ *  `.ssh` name one folder on macOS and Windows), and on Windows the namespace
+ *  prefixes (`\\?\`) and alternate data streams (`file:stream`) are dropped. */
+function comparisonPath(absolute: string): string {
+	let normalized = path.resolve(absolute);
+	if (process.platform === "win32") {
+		if (normalized.startsWith("\\\\?\\UNC\\")) normalized = `\\\\${normalized.slice(8)}`;
+		else if (normalized.startsWith("\\\\?\\")) normalized = normalized.slice(4);
+		const base = path.basename(normalized);
+		const stream = base.indexOf(":");
+		if (stream !== -1) normalized = path.join(path.dirname(normalized), base.slice(0, stream));
+	}
+	return normalized.toLowerCase();
+}
+
+/** String-only check against a synthetic home (tests, no filesystem access):
+ *  a home secret store or an env file. The runtime guard also resolves symlinks. */
+export function isSensitivePath(absolute: string, home: string = os.homedir()): boolean {
+	const file = comparisonPath(absolute);
+	return ENV_FILE.test(path.basename(file)) || HOME_SECRETS.some((s) => isWithin(file, comparisonPath(path.join(home, s))));
 }
 
 /**
