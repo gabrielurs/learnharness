@@ -45,6 +45,7 @@ await write("keyfiles/xai-credentials.json");
 await write("keyfiles/.auth.json.tmp-123");
 const uuid = "12345678-1234-4123-8123-123456789abc";
 for (const name of ["chatgpt", "github-copilot", "xai"]) await write(`keyfiles/${name}-credentials.json.${uuid}.tmp`);
+await write(`keyfiles/${path.basename(auth)}.tmp-${uuid}`);
 const targetKey = await write("relocated-token");
 await link(path.join(root, "keyfiles"), path.join(root, "private"), true);
 await link(targetKey, auth);
@@ -90,6 +91,8 @@ describe("source access: configured credentials only", () => {
 			path.join(root, "keyfiles", `${name}-credentials.json.${uuid}.tmp`),
 		])),
 		path.join(root, "private", ".auth.json.tmp-123"), path.join(root, "keyfiles", ".auth.json.tmp-123"),
+		// atomic-write temp of the configured key store: `<AUTH basename>.tmp-<uuid>`
+		path.join(root, "private", `${path.basename(auth)}.tmp-${uuid}`),
 	];
 	for (const file of protectedFiles) {
 		it(`refuses read and direct grep of ${path.relative(root, file)}`, async () => {

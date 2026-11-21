@@ -42,11 +42,17 @@ export function privatePaths(env: Record<string, string | undefined> = process.e
  *  electron subscription store): a half-written key is still a key. */
 const CREDENTIAL_TEMP = /^(?:\.auth\.json\.tmp-\d+|(?:chatgpt|github-copilot|xai)-credentials\.json\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)$/i;
 
+/** The uuid tail of the key store's own temp, `<AUTH basename>.tmp-<uuid>`
+ *  (store/atomic-write.ts names every atomic temp that way). */
+const UUID_TAIL = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 /** `<provider>-credentials.json` files in `dir` (chatgpt, copilot, …), and the
  *  writers' temp files there (upstream #414: they hold the same secret). */
 function credentialStores(dir: string): string[] {
+	const authTemp = `${path.basename(AUTH_FILE)}.tmp-`;
+	const isAuthTemp = (f: string) => f.startsWith(authTemp) && UUID_TAIL.test(f.slice(authTemp.length));
 	try {
-		return fs.readdirSync(dir).filter((f) => f.endsWith("-credentials.json") || CREDENTIAL_TEMP.test(f)).map((f) => path.join(dir, f));
+		return fs.readdirSync(dir).filter((f) => f.endsWith("-credentials.json") || CREDENTIAL_TEMP.test(f) || isAuthTemp(f)).map((f) => path.join(dir, f));
 	} catch {
 		return [];
 	}

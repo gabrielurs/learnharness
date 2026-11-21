@@ -14,7 +14,7 @@ import path from "node:path";
 import { RENDER_SETTINGS_FILE } from "../../config.ts";
 import { DEFAULT_RENDER_SETTINGS, sanitizeRenderSettings, type GraphRenderSettings } from "../core/render-settings.ts";
 import { assertGraphFormat, ensureGraphFormat } from "./graph-format.ts";
-import { writeFileAtomic } from "./atomic-write.ts";
+import { writeFileAtomicSync } from "./atomic-write.ts";
 
 /** The persisted settings, or null when no file exists yet (first boot). */
 export function readRenderSettings(): GraphRenderSettings | null {
@@ -37,7 +37,8 @@ export function writeRenderSettings(raw: unknown): GraphRenderSettings {
 	const settings = sanitizeRenderSettings(raw);
 	fs.mkdirSync(path.dirname(RENDER_SETTINGS_FILE), { recursive: true });
 	ensureGraphFormat(); // the lazy format stamp (graph-format.ts)
-	writeFileAtomic(RENDER_SETTINGS_FILE, JSON.stringify(settings, null, "\t"));
+	// allowInPlaceFallback: if Windows keeps the rename locked, save in place (not atomic)
+	writeFileAtomicSync(RENDER_SETTINGS_FILE, JSON.stringify(settings, null, "\t"), { allowInPlaceFallback: true });
 	return settings;
 }
 
