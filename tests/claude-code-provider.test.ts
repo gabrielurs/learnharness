@@ -152,6 +152,12 @@ describe("claude-code CLI seam", () => {
 		assert.equal(out.HOME, "/h");
 	});
 
+	it("external CLIs never receive the desktop API capability", () => {
+		const out = childEnv({ NODE_ENV: "test", LH_DESKTOP_API_SECRET: "x", LH_DESKTOP_SERVER: "1" });
+		assert.equal(out.LH_DESKTOP_API_SECRET, undefined);
+		assert.equal(out.LH_DESKTOP_SERVER, undefined);
+	});
+
 	it("assembles the first assistant message from the raw API stream — text, native tool calls, usage", () => {
 		const events: AssistantMessageEvent[] = [];
 		const asm = new BridgeAssembler({ api: "claude-code-cli", provider: "claude-code", id: "claude-opus-5-5" }, (e) => events.push(e));

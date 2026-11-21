@@ -102,6 +102,10 @@ const API_AUTH_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_B
 export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const out = { ...env };
 	for (const name of API_AUTH_VARS) delete out[name];
+	// The per-launch desktop API capability is for the trusted window only
+	// (same rule as the browser-service helper's spawn env).
+	delete out.LH_DESKTOP_API_SECRET;
+	delete out.LH_DESKTOP_SERVER;
 	out.CLAUDE_CODE_DISABLE_CLAUDE_MDS = "1";
 	return out;
 }
