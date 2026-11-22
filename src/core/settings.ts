@@ -268,7 +268,7 @@ export interface AgentSettings {
 	 *  absolute or "~/"-anchored; the server expands them at call time.
 	 *  The app's own private files (keys, credentials, data dir) are
 	 *  refused whatever this says (src/server/file-access.ts). */
-	fileAccess?: { folders?: string[] };
+	fileAccess?: { folders?: string[]; restricted?: boolean };
 }
 
 /** Markdown-rendering knobs — the bare-bones set (owner decision). */
@@ -536,14 +536,27 @@ function sanitizeAgent(raw: Record<string, unknown>): AgentSettings {
 		else if (typeof enabled === "boolean") out.graphTools = { enabled };
 	}
 	// File-access folders: lenient read side (non-string / blank entries
-	// drop; the write side's parser is strict).
-	if (raw.fileAccess !== null && typeof raw.fileAccess === "object" && !Array.isArray(raw.fileAccess)) {
-		const folders = (raw.fileAccess as Record<string, unknown>).folders;
-		out.fileAccess = Array.isArray(folders)
-			? { folders: folders.filter((f): f is string => typeof f === "string" && f.trim() !== "") }
-			: {};
-	}
+	// drop; the write side's parser is strict). A malformed policy fails
+	// closed: restricted with no folders refuses every read (file-access.ts).
+	if (raw.fileAccess !== undefined) out.fileAccess = sanitizeFileAccess(raw.fileAccess);
 	return out;
+}
+
+type FileAccessSettings = NonNullable<AgentSettings["fileAccess"]>;
+
+const malformedFileAccess = (): FileAccessSettings => ({ restricted: true, folders: [] });
+
+function sanitizeFileAccess(raw: unknown): FileAccessSettings {
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return malformedFileAccess();
+	const record = raw as Record<string, unknown>;
+	// Our own sentinel read back from disk (unrelated section writes carry the
+	// record along): it stays malformed, never reopens as an empty list.
+	if (record.restricted === true) return malformedFileAccess();
+	if (record.folders === undefined) return {};
+	if (!Array.isArray(record.folders)) return malformedFileAccess();
+	const folders = record.folders.filter((f): f is string => typeof f === "string" && f.trim() !== "");
+	if (folders.length === 0 && record.folders.length > 0) return malformedFileAccess();
+	return { folders };
 }
 
 function sanitizeMdRendering(raw: unknown): MdRenderingSettings {

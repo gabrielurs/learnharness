@@ -41,6 +41,11 @@ export interface FileAccessPolicy {
 	folders: readonly string[];
 	/** Absolute files/folders never readable, whatever `folders` says. */
 	denied: readonly string[];
+	/** A malformed saved policy: with no folders, every read is refused
+	 *  (fail closed). Absent = the normal rule above. */
+	restricted?: boolean;
+	/** Why the policy is restricted; shown in the denial. */
+	error?: string;
 }
 
 const OPEN_POLICY: FileAccessPolicy = { folders: [], denied: [] };
@@ -85,12 +90,13 @@ export async function resolvePolicy(policy: FileAccessPolicy = fileAccessPolicy(
 		Promise.all(policy.folders.map(realOrResolved)),
 		Promise.all([...policy.denied, ...HOME_SECRETS.map((s) => path.join(home, s))].map(realOrResolved)),
 	]);
-	return { folders, denied };
+	return { folders, denied, ...(policy.restricted ? { restricted: true, error: policy.error } : {}) };
 }
 
 /** True when a REAL path is refused by an already-resolved policy. */
 export function isRefused(realPath: string, resolved: FileAccessPolicy): boolean {
 	if (isDenied(realPath, resolved)) return true;
+	if (resolved.restricted && resolved.folders.length === 0) return true;
 	return resolved.folders.length > 0 && !resolved.folders.some((f) => isWithin(realPath, f));
 }
 
@@ -135,6 +141,12 @@ export async function guardSourcePath(absolute: string): Promise<string> {
 		throw new Error(`Access denied: ${absolute} is private app data or a secret store (keys, credentials, records) and is never readable by the tutor.`);
 	}
 	if (isRefused(real, resolved)) {
+		if (resolved.restricted && resolved.folders.length === 0) {
+			throw new Error(
+				`Access denied: ${absolute} — ${resolved.error ?? "the file-access policy is malformed"}. ` +
+					"Fix it in Settings → Agent → File access.",
+			);
+		}
 		throw new Error(
 			`Access denied: ${absolute} is outside the folders the learner allowed (${fileAccessPolicy().folders.join(", ")}). ` +
 				"Ask the learner to move the file into an allowed folder or add its folder in Settings → Agent → File access.",

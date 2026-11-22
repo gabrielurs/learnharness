@@ -62,6 +62,11 @@ function credentialStores(dir: string): string[] {
 }
 
 export function fileAccessPolicy(): FileAccessPolicy {
-	const folders = settingsStore.readSettings()?.agent?.fileAccess?.folders ?? [];
-	return { folders: folders.map((f) => expandFolder(f)), denied: privatePaths() };
+	const access = settingsStore.readSettings()?.agent?.fileAccess;
+	const folders = access?.folders ?? [];
+	const denied = privatePaths();
+	if (access?.restricted === true) {
+		return { folders: [], denied, restricted: true, error: "the saved folder list is malformed" };
+	}
+	return { folders: folders.map((f) => expandFolder(f)), denied };
 }

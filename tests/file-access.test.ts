@@ -240,6 +240,23 @@ describe("fileAccess settings", () => {
 		assert.deepEqual(record?.agent?.fileAccess, { folders: ["~/Study"] });
 	});
 
+	it("a malformed folder policy reads back restricted, never open", () => {
+		const read = (fileAccess: unknown) => sanitizeUserSettings({ version: 1, agent: { fileAccess } })?.agent?.fileAccess;
+		const malformed = { restricted: true, folders: [] };
+		assert.deepEqual(read({ folders: "~/Study" }), malformed); // folders is not an array
+		assert.deepEqual(read({ folders: [3, ""] }), malformed); // every entry drops
+		assert.deepEqual(read(null), malformed); // not an object
+		assert.deepEqual(read(malformed), malformed); // our sentinel survives a round trip
+		assert.deepEqual(read({ folders: [] }), { folders: [] }); // valid empty list: unrestricted, as before
+		assert.deepEqual(read({}), {}); // what the strict writer stores without folders
+	});
+
+	it("a malformed policy refuses every existing path with its own message", async () => {
+		setFileAccessPolicy(() => ({ folders: [], denied: [], restricted: true, error: "the saved folder list is malformed" }));
+		await assert.rejects(guardSourcePath(path.join(ROOT, "study", "notes.md")), /— the saved folder list is malformed\. /);
+		await assert.rejects(guardSourcePath(path.join(ROOT, "outside", "secret.txt")), /malformed/);
+	});
+
 	it("the settings-page composers add valid folders once and remove them", () => {
 		assert.equal(isFolderEntry("~/Study"), true);
 		assert.equal(isFolderEntry("C:\\Users\\l"), true);
