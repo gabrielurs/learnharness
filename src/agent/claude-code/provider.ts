@@ -42,6 +42,7 @@ function cliModel(id: string, name: string): Model<typeof CLAUDE_CODE_API> {
 export const CLAUDE_CODE_MODELS = [
 	cliModel("claude-opus-5-5", "Claude Opus 5.5 (Claude Code)"),
 	cliModel("claude-sonnet-5-5", "Claude Sonnet 5.5 (Claude Code)"),
+	cliModel("claude-fable-5-2", "Claude Fable 5.2 (Claude Code)"),
 ] as const;
 
 /** Is the bridge usable right now (the CLI is installed)? */

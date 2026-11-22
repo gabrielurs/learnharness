@@ -505,10 +505,10 @@ process.stdin.on("end", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("is registered with exactly Opus 5.5 and Sonnet 5.5", () => {
+	it("is registered with exactly Opus 5.5, Sonnet 5.5 and Fable 5.2", () => {
 		assert.deepEqual(
 			piModels().getModels(CLAUDE_CODE_PROVIDER).map((m) => m.id),
-			["claude-opus-5-5", "claude-sonnet-5-5"],
+			["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-2"],
 		);
 	});
 
