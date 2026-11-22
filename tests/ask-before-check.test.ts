@@ -41,7 +41,14 @@ function probeConcluded(): LhMessage[] {
 	return [assistant("pd-call", [{ id: "probe-done", name: "probe_done", arguments: {} }]), probeDone()];
 }
 
-const CHECK = { question: "What carries the tense?", type: "check", nodeId: "n1" };
+const CHECK = {
+	question: "What carries the tense?",
+	type: "check",
+	nodeId: "n1",
+	options: [{ label: "the auxiliary", value: "a" }, { label: "the verb stem", value: "b" }],
+	correctAnswer: "a",
+	explanation: "The auxiliary carries tense.",
+};
 
 function teachCheck(calls: { id: string; name?: string; arguments?: unknown }[] = [{ id: "c1" }]): LhMessage[] {
 	return [
@@ -84,7 +91,7 @@ describe("ask-before-check appends", () => {
 
 	it("closes a prediction, then appends his message", () => {
 		const appends = inputAppends(
-			{ messages: teachCheck([{ id: "c1", arguments: { question: "Guess?", type: "predict", nodeId: "n1" } }]) },
+			{ messages: teachCheck([{ id: "c1", arguments: { ...CHECK, question: "Guess?", type: "predict" } }]) },
 			{ type: "ask-before-check", toolCallId: "c1", text: "why those three?" },
 		);
 		assert.equal(appends.length, 2);
@@ -93,14 +100,14 @@ describe("ask-before-check appends", () => {
 		assert.equal(result.toolCallId, "c1");
 		assert.deepEqual(JSON.parse(result.content[0]!.text), { kind: "quiz", notYet: true });
 		assert.equal((appends[1] as { role: string; content: string }).content, "why those three?");
-		assert.equal(danglingQuestionCount([...teachCheck([{ id: "c1", arguments: { question: "Guess?", type: "predict", nodeId: "n1" } }]), ...appends]), 0);
+		assert.equal(danglingQuestionCount([...teachCheck([{ id: "c1", arguments: { ...CHECK, question: "Guess?", type: "predict" } }]), ...appends]), 0);
 	});
 
 	it("closes an explain prediction the same way", () => {
 		const appends = inputAppends(
 			{
 				messages: teachCheck([
-					{ id: "c1", name: "explain", arguments: { question: "What gives?", type: "predict", nodeId: "n1" } },
+					{ id: "c1", name: "explain", arguments: { question: "What gives?", type: "predict", nodeId: "n1", correctAnswer: "Because it does." } },
 				]),
 			},
 			{ type: "ask-before-check", toolCallId: "c1", text: "before I guess" },
@@ -115,7 +122,7 @@ describe("ask-before-check appends", () => {
 			/only open question/,
 		);
 		assert.throws(
-			() => inputAppends({ messages: [assistant("a", [{ id: "c1", name: "quiz", arguments: { question: "Q?" } }])] }, { type: "ask-before-check", toolCallId: "c1", text: "huh?" }),
+			() => inputAppends({ messages: [assistant("a", [{ id: "c1", name: "quiz", arguments: { question: "Q?", options: CHECK.options, correctAnswer: "a", explanation: "Q." } }])] }, { type: "ask-before-check", toolCallId: "c1", text: "huh?" }),
 			/teach-phase question/,
 		);
 		assert.throws(

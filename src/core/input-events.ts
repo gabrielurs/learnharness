@@ -42,6 +42,8 @@ import {
 	newProblemDismissedMarker,
 	newThinkingMessage,
 	newUserMessage,
+	newMessageId,
+	questionCallsOf,
 	pendingProblemDismissalOf,
 } from "./native-messages.ts";
 import { QUESTION_TOOLS, toolQuestionKind } from "./pending.ts";
@@ -59,6 +61,8 @@ export type ChatInput =
 	 *  at the record's tail stay in the record; only the temporary agent
 	 *  history omits them, so the turn runs again from the input before them. */
 	| { type: "retry" }
+	/** Explicit replacement of the current malformed question batch. */
+	| { type: "retry-question"; messageId: string; contentIndex: number; toolCallId: string }
 	/** The practice dock's two buttons (owner, 2026-10-04): the learner's
 	 *  thinking on the ACTIVE problem — one lane (owner 2026-10-05):
 	 *  whether it claims an answer is read from the text. One
@@ -194,6 +198,12 @@ export function parseChatInput(input: unknown): ChatInput {
 			return { type: "continue" };
 		case "retry":
 			return { type: "retry" };
+		case "retry-question":
+			if (typeof i.messageId !== "string" || !i.messageId || typeof i.toolCallId !== "string" || !i.toolCallId ||
+				typeof i.contentIndex !== "number" || !Number.isSafeInteger(i.contentIndex) || i.contentIndex < 0) {
+				throw new ChatInputError("retry-question input requires an exact question occurrence");
+			}
+			return { type: "retry-question", messageId: i.messageId, contentIndex: i.contentIndex, toolCallId: i.toolCallId };
 		case "thinking":
 			if (typeof i.problemCallId !== "string" || i.problemCallId.length === 0) {
 				throw new ChatInputError("thinking input requires problemCallId");
@@ -251,6 +261,8 @@ export function inputAppends(
 			// agent history, so nothing new appends here.
 			assertRetryable(record.messages);
 			return [];
+		case "retry-question":
+			return questionRecoveryAppends(record.messages, input);
 		case "thinking": {
 			const active = activeProblemOf(record.messages);
 			if (!active || active.toolCallId !== input.problemCallId) {
@@ -291,6 +303,24 @@ export function inputAppends(
 			];
 		}
 	}
+}
+
+/** Validate before any turn effects, then again against current saved truth.
+ * Never accepts a failed/aborted generation (the existing Retry/new-message
+ * paths own those), a stale occurrence, or an answerable sibling. */
+export function questionRecoveryAppends(
+	messages: readonly LhMessage[],
+	input: Extract<ChatInput, { type: "retry-question" }>,
+): LhMessage[] {
+	const calls = questionCallsOf(messages);
+	const target = calls.find(call => call.messageId === input.messageId && call.contentIndex === input.contentIndex && call.toolCallId === input.toolCallId);
+	if (!target || target.status !== "malformed") throw new ChatInputError("This malformed question is no longer available to retry. Refresh the session.");
+	if (calls.some(call => call.status === "answerable")) throw new ChatInputError("Answer or discard the remaining question before retrying this one.");
+	return calls.filter(call => call.status === "malformed").map(call => ({
+		id: newMessageId(), role: "toolResult", toolCallId: call.toolCallId, toolName: call.tool,
+		content: [{ type: "text", text: `Tool call "${call.tool}" could not be displayed as a complete question. The learner requested a replacement, not an answer. Re-issue the question with complete, valid arguments.` }],
+		details: { questionRecovery: true }, isError: true, timestamp: Date.now(),
+	}));
 }
 
 /** The failure owning the ephemeral banner. Plan presentation and

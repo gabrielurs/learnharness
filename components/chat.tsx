@@ -20,6 +20,7 @@ import { BrailleSpinner } from "@/components/braille-spinner";
 import { LiveToolCard } from "@/components/artifacts/live-tool-card";
 import { Separator } from "@/components/ui/separator";
 import { AnsweredCard } from "@/components/answered-card";
+import { MalformedQuestion } from "@/components/malformed-question";
 import { artifactRenderers } from "@/components/artifacts";
 import { SubagentSteerCard } from "@/components/artifacts/steer-card";
 import { Composer } from "@/components/composer";
@@ -71,6 +72,7 @@ import { CoverageRing } from "@/components/extraction-coverage";
 import {
 	activeProblemOf,
 	pendingQuestionOf,
+	malformedQuestionsOf,
 	dismissedAnswer,
 	findPendingToolCall,
 	phaseAt3,
@@ -215,12 +217,24 @@ const TranscriptRows = memo(function TranscriptRows({
 	sourceTextParts,
 	status,
 	onOpenPlan,
+	malformedQuestions,
+	busy,
+	questionPending,
+	compacting,
+	onRetryQuestion,
 }: {
 	messages: LhViewMessage[];
 	phases: Phase3[];
 	sourceTextParts: Map<string, string>;
 	status: ReturnType<typeof useChatSession>["status"];
 	onOpenPlan: (open: boolean) => void;
+	/** Saved malformed question calls: each one gets the recovery card. */
+	malformedQuestions: ReturnType<typeof malformedQuestionsOf>;
+	busy: boolean;
+	/** A question waits in the dock; recovery waits behind it. */
+	questionPending: boolean;
+	compacting: boolean;
+	onRetryQuestion: (call: ReturnType<typeof malformedQuestionsOf>[number]) => void;
 }) {
 	return (
 		<>
@@ -403,6 +417,10 @@ const TranscriptRows = memo(function TranscriptRows({
 									case "tool-ask_user_question":
 									case "tool-explain":
 									case "tool-recall": {
+										const malformed = !busy && malformedQuestions.find(call => call.messageId === part.sourceMessageId && call.contentIndex === part.sourceContentIndex && call.toolCallId === part.toolCallId);
+										if (malformed) return <MalformedQuestion key={pi} disabled={questionPending || compacting}
+											reason={questionPending ? "Answer or discard the remaining question first." : undefined}
+											onRetry={() => onRetryQuestion(malformed)} />;
 										// Pending/streaming questions live in the dock, not the
 										// transcript; answered ones render as graded records.
 										if (part.state === "output-available") {
@@ -701,6 +719,7 @@ export function Chat({
 	}, []);
 
 	const pending = findPendingToolCall(messages, pendingQuestionOf(nativeMessages));
+	const malformedQuestions = useMemo(() => malformedQuestionsOf(nativeMessages), [nativeMessages]);
 	// The abort handler reads the pending question from a ref (the window
 	// listener is mount-scoped; the value it needs is render-scoped).
 	const pendingRef = useRef(pending);
@@ -838,6 +857,12 @@ export function Chat({
 	 *  Auto-continuations (probe answers) never set it — their refusal
 	 *  opens recovery with no replay. */
 	const draftRef = useRef<string | null>(null);
+	// Retry a malformed question: the server rebuilds that call. The draft is
+	// cleared so a restored draft doesn't land over the recovery card.
+	const retryQuestion = useCallback((call: ReturnType<typeof malformedQuestionsOf>[number]) => {
+		draftRef.current = null;
+		void send({ type: "retry-question", messageId: call.messageId, contentIndex: call.contentIndex, toolCallId: call.toolCallId });
+	}, [send]);
 
 	// THE BYOK REFUSAL (owner, 2026-09-22): a send that lands the server's
 	// 503 models_not_configured envelope renders as the SETUP FLOW, never
@@ -1624,7 +1649,7 @@ export function Chat({
 								/>
 							)}
 
-							<TranscriptRows messages={messages} phases={phases} sourceTextParts={sourceTextParts} status={status} onOpenPlan={setPlanOpen} />
+							<TranscriptRows messages={messages} phases={phases} sourceTextParts={sourceTextParts} status={status} onOpenPlan={setPlanOpen} malformedQuestions={malformedQuestions} busy={busy} questionPending={!!pending} compacting={compacting} onRetryQuestion={retryQuestion} />
 
 							{/* THE placeholder, ACTION-gated (owner, optimistic round
 							    3, 2026-10-02): spinner + shimmered Thinking… from the
