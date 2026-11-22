@@ -38,13 +38,16 @@ export function privatePaths(env: Record<string, string | undefined> = process.e
 	return denied;
 }
 
+/** The uuid (v4) that names every atomic temp (store/atomic-write.ts). */
+const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+
 /** Temp copies the key writers create beside the stores (store/auth.ts and the
  *  electron subscription store): a half-written key is still a key. */
-const CREDENTIAL_TEMP = /^(?:\.auth\.json\.tmp-\d+|(?:chatgpt|github-copilot|xai)-credentials\.json\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)$/i;
+const CREDENTIAL_TEMP = new RegExp(`^(?:\\.auth\\.json\\.tmp-\\d+|(?:chatgpt|github-copilot|xai)-credentials\\.json\\.${UUID_V4}\\.tmp)$`, "i");
 
 /** The uuid tail of the key store's own temp, `<AUTH basename>.tmp-<uuid>`
  *  (store/atomic-write.ts names every atomic temp that way). */
-const UUID_TAIL = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_TAIL = new RegExp(`^${UUID_V4}$`, "i");
 
 /** `<provider>-credentials.json` files in `dir` (chatgpt, copilot, …), and the
  *  writers' temp files there (upstream #414: they hold the same secret). */
