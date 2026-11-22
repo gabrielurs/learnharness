@@ -2105,8 +2105,6 @@ function DockOverlay({
 	revealedRef.current = revealed;
 
 	const blockRef = useRef<HTMLDivElement>(null);
-	const viewportRef = useRef<HTMLDivElement>(null);
-	const bodyRef = useRef<HTMLDivElement>(null);
 	const shellRef = useRef<HTMLDivElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
 	const mode = pending
