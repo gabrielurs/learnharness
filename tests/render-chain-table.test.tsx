@@ -208,7 +208,7 @@ describe("ChainTableBody — chain rows (chips + connectors)", () => {
 	it("renders Markdown, code and math only in expanded proposition statements", () => {
 		const statement = "**Statement** " + String.raw`$\nu$` + " with `literal`.\n\n$$\n" +
 			String.raw`\begin{pmatrix}a&b\\c&d\end{pmatrix}` + '\n$$\n\n```js\nconst text = "\\n";\n```\n\n' +
-			"| Value | Meaning |\n| --- | --- |\n| x | Variable |";
+			"| Value | Meaning |\n| --- | --- |\n| x | Variable |\n\n![untrusted](https://example.invalid/image.png)";
 		const nodes = NODES.map(n => n.id === "a" ? { ...n, name: "**Name** $x$", statement } : n);
 		const before = structuredClone(nodes);
 		const sourceName = "**Source** $x$ `raw`";
@@ -224,6 +224,8 @@ describe("ChainTableBody — chain rows (chips + connectors)", () => {
 		assert.ok(row.querySelector('[aria-label="Copy code"]'));
 		assert.ok(row.querySelector('[data-testid="md-code"]')?.textContent?.includes('const text = "\\n";'));
 		assert.ok(row.querySelector("table"));
+		assert.equal(row.querySelector("img"), null);
+		assert.ok(row.innerHTML.includes("[Image blocked: untrusted]"));
 		const prose = row.querySelector(".lh-prose")!;
 		for (const token of ["[--font-prose:var(--font-ui)]", "[--lh-prose-size:var(--text-xs)]",
 			"[--lh-prose-leading:1.625]", "text-muted-foreground", "[&_[data-streamdown=inline-code]]:[font-size:inherit]",
